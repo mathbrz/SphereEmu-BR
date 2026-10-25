@@ -29,7 +29,7 @@ Textos prontos para montar a categoria do projeto no Discord. Copie, ajuste o li
 > texturas, dados). Veja o `DISCLAIMER.md`.
 >
 > **Como participar**
-> 1. Peça acesso ao repositório com o seu usuário do GitHub.
+> 1. Faça um fork do repositório no GitHub e clone o seu fork.
 > 2. Leia `docs/GETTING_STARTED.pt-BR.md` para rodar o servidor no seu computador.
 > 3. Relate problemas em `#bugs-and-tests` e propostas por issue ou pull request no GitHub.
 >

@@ -23,7 +23,7 @@ git clone https://github.com/mathbrz/SphereEmu-BR.git
 cd SphereEmu-BR
 ```
 
-The repository is private for now. Ask a maintainer for access first.
+The repository is public. To contribute, fork it first (see [CONTRIBUTING.md](../CONTRIBUTING.md)).
 
 ## 2. Fetch the game files
 

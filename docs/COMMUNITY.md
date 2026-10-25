@@ -29,7 +29,7 @@ names are in English for everyone, the texts exist in three languages.
 > others. The repository holds no game files (client, models, textures, data). See `DISCLAIMER.md`.
 >
 > **How to take part**
-> 1. Ask for access to the repository with your GitHub user name.
+> 1. Fork the repository on GitHub and clone your fork.
 > 2. Read `docs/GETTING_STARTED.md` to run the server on your computer.
 > 3. Report problems in `#bugs-and-tests` and send proposals as an issue or pull request on GitHub.
 >
