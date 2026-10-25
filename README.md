@@ -18,6 +18,7 @@ behaviour backed by evidence from the original game. It is a fork of [knelse/Sph
 | Run the server and play on my computer | [docs/GETTING_STARTED.md](docs/GETTING_STARTED.md) ([Português](docs/GETTING_STARTED.pt-BR.md)) |
 | Contribute a fix or a feature | [CONTRIBUTING.md](CONTRIBUTING.md) ([Italiano](CONTRIBUTING.it.md), [Português](CONTRIBUTING.pt-BR.md)) |
 | Work with an AI assistant | [AGENTS.md](AGENTS.md) and [docs/AI_QUICKSTART.md](docs/AI_QUICKSTART.md) |
+| See what to work on next, and what was done | [docs/ROADMAP.md](docs/ROADMAP.md) and [docs/CHANGELOG.md](docs/CHANGELOG.md) |
 | Find my way around the code | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) |
 | See what still differs from the original | [docs/KNOWN_DEVIATIONS.md](docs/KNOWN_DEVIATIONS.md) and [docs/OPEN_RESEARCH.md](docs/OPEN_RESEARCH.md) |
 | Record how the official server behaves | [docs/CAPTURING.md](docs/CAPTURING.md) |
