@@ -1,42 +1,72 @@
-> **SphereEmu-BR** is a community fork of [knelse/SphereEmu](https://github.com/knelse/SphereEmu) (licensed CC BY-NC-SA 4.0, see [LICENSE.md](LICENSE.md)).
-> Fan project, non-profit, not affiliated with the owners of Sphere. See [DISCLAIMER.md](DISCLAIMER.md), [docs/UPSTREAM.md](docs/UPSTREAM.md), [CONTRIBUTING.md](CONTRIBUTING.md) and [docs/INDEX.md](docs/INDEX.md).
-> Game files and data are **not** in this repository. `Tools/setup-assets.ps1` fetches them from the original project's public repository so the server can run.
-> **AI assistants:** read [AGENTS.md](AGENTS.md) and [docs/AI_QUICKSTART.md](docs/AI_QUICKSTART.md) first.
-> **How to install and run:** [docs/GETTING_STARTED.md](docs/GETTING_STARTED.md) (English) or [docs/GETTING_STARTED.pt-BR.md](docs/GETTING_STARTED.pt-BR.md) (Português). The setup notes further down in this file come from the original project and some of them (downloads, auto-updater) do not apply to this fork. Community texts for Discord are in [docs/COMMUNITY.md](docs/COMMUNITY.md).
+# SphereEmu-BR
 
-# SphereEmu
-Early WIP Sphere (old Russian MMORPG) server emulator
+[![PR build](https://github.com/mathbrz/SphereEmu-BR/actions/workflows/pr-build.yml/badge.svg)](https://github.com/mathbrz/SphereEmu-BR/actions/workflows/pr-build.yml)
+[![License: CC BY-NC-SA 4.0](https://img.shields.io/badge/license-CC%20BY--NC--SA%204.0-lightgrey.svg)](LICENSE.md)
+![Not for profit](https://img.shields.io/badge/fan%20project-not%20for%20profit-blue.svg)
 
-Currently built with `Godot 4.7.1 Mono`.
+A community server emulator for **Sphere** (the old Russian MMORPG), built to behave like the original, with every
+behaviour backed by evidence from the original game. It is a fork of [knelse/SphereEmu](https://github.com/knelse/SphereEmu)
+(CC BY-NC-SA 4.0), written in C# on Godot 4.7 Mono and run headless.
 
-## Compatibility
-Running Sphere on latest hardware (notably, RDNA 3 Radeon 7000 series) might turn out into a good old 15 fps in cities experience.
-If that happens to you, dgVoodoo2 might help:
-1. Grab the latest release from https://github.com/dege-diosg/dgVoodoo2
-2. Unpack, run, add new profile for Sphere (click Add and navigate to game folder)
-3. In the General tab, select Direct3D 12 (feature level 12.0) for Output API. Others didn't work for me, but your mileage may vary
-4. In DirectX tab, select dgVoodoo Virtual 3D Accelerated Card for Videocard, 512-4096 MB for VRAM
-5. Keep everything else as is or tweak as you like
-6. Copy D3D9.dll (or all files to be safe) from MS\x86 to game folder (launcher does not care about added files)
-7. Launch the game. If everything worked correctly, cities should jump from 15 to 150+ fps
-8. If not, try different Output APIs and/or Videocards
+> **Fan project, not for profit, not affiliated with the owners of Sphere.** This repository holds **code only**.
+> No game file (client, models, textures, data) is stored here. See [DISCLAIMER.md](DISCLAIMER.md).
 
-NB: client in the repo already has dgVoodoo bundled. If it breaks, try deleting D3D8, D3D9, D3DImm, DDRaw.dll from the repo.
+## Start here
 
-## Running the server
+| I want to | Go to |
+|---|---|
+| Run the server and play on my computer | [docs/GETTING_STARTED.md](docs/GETTING_STARTED.md) ([Português](docs/GETTING_STARTED.pt-BR.md)) |
+| Contribute a fix or a feature | [CONTRIBUTING.md](CONTRIBUTING.md) ([Italiano](CONTRIBUTING.it.md), [Português](CONTRIBUTING.pt-BR.md)) |
+| Work with an AI assistant | [AGENTS.md](AGENTS.md) and [docs/AI_QUICKSTART.md](docs/AI_QUICKSTART.md) |
+| Find my way around the code | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) |
+| See what still differs from the original | [docs/KNOWN_DEVIATIONS.md](docs/KNOWN_DEVIATIONS.md) and [docs/OPEN_RESEARCH.md](docs/OPEN_RESEARCH.md) |
+| Record how the official server behaves | [docs/CAPTURING.md](docs/CAPTURING.md) |
+| Report a bug or a missing behaviour | [Open an issue](https://github.com/mathbrz/SphereEmu-BR/issues/new/choose) |
+| Join the community | [docs/COMMUNITY.md](docs/COMMUNITY.md) |
+| Everything else | [docs/INDEX.md](docs/INDEX.md) |
 
-1. Get and install prerequisities
-   1. .NET 9 SDK - version pinned in repo-root `global.json` (CI uses the same file). Install that exact SDK (or a later patch in the same band) from https://dotnet.microsoft.com/download/dotnet/9.0 into the machine-wide location (`C:\Program Files\dotnet`), then confirm with `dotnet --version`.
-   2. Godot (4.7.1 Mono or higher)
-2. Download the repo
-   - Install [Git LFS](https://git-lfs.com/) and run `git lfs pull` (needed for `GodotAssetSource/Terrain/TerrainMeshLibrary.tres`, used only when rebuilding terrain via TerrainGridFill).
-3. Update appsettings.json for your setup.
-4. Open project in Godot, build and run (editor uses the full `Godot/` tree). Exported slim builds:
-   - **Code / config / packet definitions**: auto-updater on launch checks the tip release [`windows-debug-slim`](https://github.com/knelse/SphereEmu/releases/tag/windows-debug-slim) (Latest). Historical builds are **prerelease** tags `master-<shortSha>` (12-char; commit subject as title; last 20 kept). UI shows installed vs latest; **Update**, **Continue**, or **Change version…**. Launch also verifies files against that version’s `file-manifest.json` and restores missing/modified files when the release is still available.
-   - **Heavy packs** (models/terrain/textures/terrainbake): always CRC-synced from the floating [`asset-bundles`](https://github.com/knelse/SphereEmu/releases/tag/asset-bundles) CDN, independent of the chosen code version.
-   Bake outputs live in `GodotAssetSource/TerrainBake/` (git-tracked, `.gdignore`; slim mounts via zip pack). Terrain MeshLibrary is under `GodotAssetSource/Terrain/` for the same reason.
-5. Run `sphereclient_patched.lnk` for the client (it runs `sphereclient_patched.exe` with `/login` command line arg)
-6. Launch the game, enter desired login and password. This should create a `Players` DB entry with your login and pwd hash
-7. Next time, use those credentials or create a new user if you like
+## Quick start
 
-Multiplayer is technically supported at this moment, but everything would act strangely
+You need Windows, Git, the .NET 9 SDK (the version in [`global.json`](global.json)), Godot 4.7 Mono to run the server,
+and your own copy of the game client.
+
+```powershell
+git clone https://github.com/mathbrz/SphereEmu-BR.git
+cd SphereEmu-BR
+powershell -ExecutionPolicy Bypass -File Tools\setup-assets.ps1      # fetches the game files (about 3.8 GB)
+dotnet build SphServer.sln
+powershell -ExecutionPolicy Bypass -File Tools\server.ps1 start      # starts the server and waits until it is ready
+```
+
+Then point the game client at `127.0.0.1` and log in: the first login creates your account, and you create your own
+characters in the game. The full steps, with how to become a GM on your own server, are in the guide above.
+
+The setup script downloads the game files from the original project's public repository at the exact commit this code
+is based on. Nothing of the game is hosted here.
+
+## How the project works
+
+- **Evidence first.** A change in behaviour needs a capture of the official server, the client's data, or a
+  measurement. Without one, it is marked "custom" and made configurable.
+- **Small, reviewed changes.** Fork, branch, open a pull request against `develop`. The build runs automatically and a
+  maintainer reviews it. Nobody pushes directly to `main` or `develop`.
+- **Safety.** No passwords, captures, `sph.db`, logs or game files are ever committed or shared. Authentication, GM
+  permissions, anti-cheat and the database schema are not changed without a maintainer. See [SECURITY.md](SECURITY.md).
+- **Languages.** Code, commits, issues and pull requests are in English. Guides and community talk also exist in
+  Portuguese and Italian.
+
+## Compatibility note (low frame rate in cities)
+
+Running Sphere on recent hardware (notably Radeon 7000 series) can give about 15 fps in cities. dgVoodoo2 can help:
+
+1. Download the latest release from <https://github.com/dege-diosg/dgVoodoo2>, run it and add a profile for Sphere.
+2. In the General tab choose Direct3D 12 (feature level 12.0) as the output API; in the DirectX tab choose
+   "dgVoodoo Virtual 3D Accelerated Card" with 512 to 4096 MB of VRAM.
+3. Copy `D3D9.dll` (or all files) from `MS\x86` to the game folder, then start the game. Cities should reach 150+ fps.
+4. If it does not work, try other output APIs or video cards.
+
+## Credits and license
+
+Based on [knelse/SphereEmu](https://github.com/knelse/SphereEmu) by Andrey Klyuev and its contributors. The code is
+licensed under CC BY-NC-SA 4.0 ([LICENSE.md](LICENSE.md)): credit the original authors, keep it non-commercial, and keep
+changes under the same license. "Sphere" and everything of the original game belong to their owners.
