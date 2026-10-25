@@ -20,6 +20,16 @@ git diff -w --ignore-cr-at-eol b88f5fd21 upstream/master -- <path>
 Fixes that are not specific to this community are offered back to upstream as pull requests
 (see the introduction in knelse/SphereEmu#75).
 
+## Reported to upstream (2026-10-25)
+
+The maintainer asked us to talk on Discord before sending pull requests, because changes are planned on his side, so none
+are open yet. Two problems found in his tree are filed as issues, each with the fix this repository uses:
+
+- [knelse/SphereEmu#76](https://github.com/knelse/SphereEmu/issues/76): the keepalive pong counter can be read by the client
+  as a region 6 message and crash it (`Client/Networking/Handlers/InGame/PingHandler.cs`).
+- [knelse/SphereEmu#77](https://github.com/knelse/SphereEmu/issues/77): a jewelry vendor shows an empty shop because
+  `GetItemForTier` throws when a tier has no matching object (`Sphere.Game/NpcTrade/ItemsOnSale/ItemsOnSaleGenerator.cs`).
+
 ## Not included here (fetched by `Tools/setup-assets.ps1`)
 
 Game files and game-derived data are not part of this repository: client, models, textures, terrain, decoded data
