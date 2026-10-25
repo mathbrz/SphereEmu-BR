@@ -21,3 +21,12 @@ decided is in [KNOWN_DEVIATIONS.md](KNOWN_DEVIATIONS.md). When an item is settle
 
 Say what you did, the exact numbers you saw, and on which build (official or this server). One honest sentence such
 as "felt faster, not timed" is useful if it is marked as an impression.
+
+## Settled or updated on 2026-10-25
+
+- **#9 Respawn city:** settled by a capture. The revive comes 8.3 s after the death hit, with 100 hp, in the nearest city (a
+  death inside a castle also respawns in the city). See [ROADMAP.md](ROADMAP.md) (P1) and
+  [CAPTURE_FINDINGS_2026-10-25.md](CAPTURE_FINDINGS_2026-10-25.md).
+- **#10 Merging stacks in the inventory:** works now for any counted item (see [CHANGELOG.md](CHANGELOG.md)).
+- **#2 Give-up distance:** aggro starts at about 12 m (five monsters). The give-up distance is still not measured.
+- **#11 Other mantras:** defense, high jump and the cleansing powder are measured (see the findings file).

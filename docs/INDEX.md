@@ -11,6 +11,8 @@
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Map of the code: where each feature lives |
 | [KNOWN_DEVIATIONS.md](KNOWN_DEVIATIONS.md) | What this server does that the original does not, or that is unverified |
 | [OPEN_RESEARCH.md](OPEN_RESEARCH.md) | Questions about the original that still need a test, and what would settle each |
+| [ROADMAP.md](ROADMAP.md) | What to work on next, by priority, and what still needs a test |
+| [CHANGELOG.md](CHANGELOG.md) | What has been done and fixed |
 | [CAPTURING.md](CAPTURING.md) | How to record and read a capture of the official server |
 | [CAPTURE_FINDINGS_2026-10-25.md](CAPTURE_FINDINGS_2026-10-25.md) | What a live retail session showed: stacks, mantras and mutators, portals |
 | [COMMUNITY.md](COMMUNITY.md), [COMMUNITY.it.md](COMMUNITY.it.md), [COMMUNITY.pt-BR.md](COMMUNITY.pt-BR.md) | Ready texts to set up the project channels on Discord |
