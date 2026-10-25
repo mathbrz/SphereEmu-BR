@@ -1,0 +1,23 @@
+name: PR build
+
+on:
+  pull_request:
+    branches: [main, develop]
+
+concurrency:
+  group: pr-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # SDK version comes from repo-root global.json.
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - name: Build
+        run: dotnet build SphServer.sln --configuration Debug --nologo

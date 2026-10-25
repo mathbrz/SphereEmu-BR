@@ -1,0 +1,10 @@
+[gd_scene format=3 uid="uid://c75fu8t5hnes4"]
+
+[ext_resource type="Script" uid="uid://o57f3mf206gm" path="res://Sphere.Game/WorldObject/WorldObject.cs" id="1_5ouvc"]
+[ext_resource type="PackedScene" path="res://Godot/Models/pump1.scn" id="2_tb2jr"]
+
+[node name="WorldObject" type="Node3D" unique_id=1627497759]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 10000, 10000, 10000)
+script = ExtResource("1_5ouvc")
+
+[node name="Glb" parent="." unique_id=706815144 instance=ExtResource("2_tb2jr")]

@@ -1,0 +1,22 @@
+name: Retail behaviour finding
+description: Something you observed on the official server that we should match
+labels: ["retail-evidence"]
+body:
+  - type: textarea
+    id: observed
+    attributes:
+      label: What the official server does
+      description: Be precise (numbers, timings, distances, messages).
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence
+      description: Screenshots, a cleaned packet capture, or a description of how you measured. Never attach files with account data.
+    validations:
+      required: true
+  - type: textarea
+    id: ours
+    attributes:
+      label: What our server does today

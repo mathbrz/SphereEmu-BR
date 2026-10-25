@@ -1,0 +1,214 @@
+using System;
+using System.Threading.Tasks;
+using SphServer.Client.Networking.GameplayLogic.Stats;
+using SphServer.Client.Networking.Handlers.InGame.DamageHealEffects;
+using SphServer.Server.Config;
+using SphServer.Server.GameplayLogic.Combat;
+using SphServer.Shared.BitStream;
+using SphServer.Shared.ClientEvents;
+using SphServer.Shared.Db.DataModels;
+using SphServer.Shared.Logger;
+using SphServer.Shared.Networking;
+using SphServer.Shared.WorldState;
+using SphServer.Sphere.Game.WorldObject;
+
+namespace SphServer.Client.EventHandlers;
+
+public sealed class CombatHitEventHandler (SphereClient sphereClient) : IClientEventHandler
+{
+    private readonly Random combatRng = new ();
+
+    public Task HandleAsync (CombatHitEvent clientEvent)
+    {
+        var character = sphereClient.CurrentCharacter;
+        if (character is null)
+        {
+            LogAction (clientEvent.AttackerGlobalId, clientEvent.TargetGlobalId, clientEvent.FrameKind,
+                "skip-no-character");
+            return Task.CompletedTask;
+        }
+
+        var cfg = BalanceConfig.Get<CombatBalance> ("combat");
+        if (cfg is null)
+        {
+            LogAction (clientEvent.AttackerGlobalId, clientEvent.TargetGlobalId, clientEvent.FrameKind, "skip");
+            return Task.CompletedTask;
+        }
+
+        var heldItem = character.GetHeldItem ();
+        if (IsHealPowder (heldItem))
+        {
+            return ApplyHealPowder (clientEvent, heldItem);
+        }
+
+        if (IsSelfHit (clientEvent, sphereClient))
+        {
+            return ApplySelfHit (clientEvent, character, cfg);
+        }
+
+        var targetObject = ActiveWorldObjects.Get (clientEvent.TargetGlobalId);
+        if (targetObject is SphereClient)
+        {
+            sphereClient.MaybeQueueNetworkPacketSend (
+                CommonPackets.AttackTargetEcho (clientEvent.TargetLocalId, character.ClientIndex, 0, 0,
+                    ObjectType.Stats));
+            LogAction (clientEvent.AttackerGlobalId, clientEvent.TargetGlobalId, clientEvent.FrameKind,
+                "player-stub");
+            return Task.CompletedTask;
+        }
+
+        if (targetObject is not Monster monster)
+        {
+            LogAction (clientEvent.AttackerGlobalId, clientEvent.TargetGlobalId, clientEvent.FrameKind,
+                targetObject is null ? "skip-no-such-object" : $"skip-not-a-monster-{targetObject.GetType ().Name}");
+            return Task.CompletedTask;
+        }
+
+        var targetObjectType = WireObjectType (monster);
+
+        if (monster.IsDead)
+        {
+            LogAction (clientEvent.AttackerGlobalId, clientEvent.TargetGlobalId, clientEvent.FrameKind,
+                "skip-already-dead");
+            return Task.CompletedTask;
+        }
+
+        var roll = DamageCalc.RollAttack (character.MeleePAtk, character.MagicMAtk, !character.HoldsItemInHand,
+            monster.CurrentPDef, monster.CurrentMDef, combatRng, cfg);
+        var damageEvent = new DamageEvent (clientEvent.AttackerGlobalId, sphereClient, roll.TotalDamage, roll.School,
+            roll.IsCrit);
+        // 0 HP broadcasts entity_killed, and the client applies the killing blow from that
+        var outcome = monster.TakeDamage (in damageEvent);
+        if (outcome.BecameDead)
+        {
+            LogAction (clientEvent.AttackerGlobalId, clientEvent.TargetGlobalId, clientEvent.FrameKind, "kill");
+            return Task.CompletedTask;
+        }
+
+        var damageApplied = outcome.Applied;
+        if (damageApplied is < 0 or > 30000)
+        {
+            SphLogger.Error ($"CombatHit: damage {damageApplied} outside 0..30000, clamped.");
+            damageApplied = Math.Clamp (damageApplied, 0, 30000);
+        }
+
+        var damageToTarget = 30000 - damageApplied;
+        sphereClient.MaybeQueueNetworkPacketSend (
+            CommonPackets.AttackTargetEcho (clientEvent.TargetLocalId, character.ClientIndex, damageToTarget,
+                outcome.RemainingHp, targetObjectType));
+        LogAction (clientEvent.AttackerGlobalId, clientEvent.TargetGlobalId, clientEvent.FrameKind,
+            roll.IsMiss ? "miss" : outcome.Applied.ToString ());
+        return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// Alt-self rolls damage and karma into a queued HP delta, without applying HP here
+    /// </summary>
+    private Task ApplySelfHit (CombatHitEvent clientEvent, CharacterDbEntry character, CombatBalance cfg)
+    {
+        if (character.CurrentHP <= 0)
+        {
+            LogAction (clientEvent.AttackerGlobalId, clientEvent.TargetGlobalId, clientEvent.FrameKind,
+                "skip-already-dead");
+            return Task.CompletedTask;
+        }
+
+        var roll = DamageCalc.RollAttack (character.MeleePAtk, character.MagicMAtk, !character.HoldsItemInHand,
+            character.PDef, character.MDef, combatRng, cfg);
+        var totalDamage = roll.TotalDamage;
+        var outcome = MonsterCombat.ComputeOutcome (character.CurrentHP, totalDamage);
+        if (outcome.Applied == 0)
+        {
+            LogAction (clientEvent.AttackerGlobalId, clientEvent.TargetGlobalId, clientEvent.FrameKind,
+                roll.IsMiss ? "miss" : "0");
+            return Task.CompletedTask;
+        }
+
+        if (outcome.BecameDead)
+        {
+            character.ApplySelfKillKarma (out _);
+        }
+
+        // Killing blow: enqueue exact remainder to 0, not the uncapped roll.
+        var healthDiff = outcome.BecameDead ? -character.CurrentHP : -outcome.Applied;
+        var killerProcess = SphBitStream.ByteSwap (character.ClientIndex);
+        sphereClient.EnqueueClientEvent (new CharacterHealthChangeEvent (character.ClientIndex, healthDiff,
+            killerProcess));
+        LogAction (clientEvent.AttackerGlobalId, clientEvent.TargetGlobalId, clientEvent.FrameKind,
+            outcome.BecameDead
+                ? $"self-kill karma={character.KarmaCount} dmg={-healthDiff}"
+                : outcome.Applied.ToString ());
+        return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// Healing powders carry positive HP/MP columns and no damage; they must not go through the attack roll
+    /// </summary>
+    private static bool IsHealPowder (ItemDbEntry item) =>
+        (item.GameObjectType is GameObjectType.Powder or GameObjectType.Powder_Area or GameObjectType.Powder_Event
+            or GameObjectType.Powder_Guild)
+        && item.PAtkNegative >= 0 && item.MAtkNegativeOrHeal >= 0
+        && (item.PAtkNegative > 0 || item.MAtkNegativeOrHeal > 0 || item.MPHeal > 0);
+
+    /// <summary>
+    /// HP goes through the target's own health handler, MP is set and pushed to the target's client
+    /// </summary>
+    private Task ApplyHealPowder (CombatHitEvent clientEvent, ItemDbEntry powder)
+    {
+        var target = IsSelfHit (clientEvent, sphereClient)
+            ? sphereClient
+            : ActiveWorldObjects.Get (clientEvent.TargetGlobalId) as SphereClient;
+        var targetCharacter = target?.CurrentCharacter;
+        if (target is null || targetCharacter is null || targetCharacter.CurrentHP <= 0)
+        {
+            LogAction (clientEvent.AttackerGlobalId, clientEvent.TargetGlobalId, clientEvent.FrameKind,
+                "skip-heal-no-living-player");
+            return Task.CompletedTask;
+        }
+
+        // pw_w_tm rows put the heal in the magic column; the event powders repeat it in both
+        var hpHeal = Math.Max (powder.PAtkNegative, powder.MAtkNegativeOrHeal);
+        if (hpHeal > 0)
+        {
+            target.EnqueueClientEvent (new CharacterHealthChangeEvent (targetCharacter.ClientIndex, hpHeal));
+        }
+
+        if (powder.MPHeal > 0)
+        {
+            targetCharacter.CurrentMP =
+                (ushort) Math.Min (targetCharacter.MaxMP, targetCharacter.CurrentMP + powder.MPHeal);
+            target.MaybeQueueNetworkPacketSend (CommonPackets.BuildPlayerSetStat (
+                SphBitStream.ByteSwap (targetCharacter.ClientIndex), (byte) Stat.MpCurrent,
+                targetCharacter.CurrentMP));
+            NetworkedStatsUpdater.Update (targetCharacter, refreshPeers: false);
+        }
+
+        LogAction (clientEvent.AttackerGlobalId, clientEvent.TargetGlobalId, clientEvent.FrameKind,
+            $"heal hp={hpHeal} mp={powder.MPHeal}");
+        return Task.CompletedTask;
+    }
+
+    private static bool IsSelfHit (CombatHitEvent clientEvent, SphereClient attacker)
+    {
+        return clientEvent.TargetGlobalId == clientEvent.AttackerGlobalId
+               || clientEvent.TargetGlobalId == attacker.ID
+               || clientEvent.TargetGlobalId == SphBitStream.ByteSwap (clientEvent.AttackerGlobalId);
+    }
+
+    Task IClientEventHandler.HandleAsync (ClientQueuedEvent clientEvent) =>
+        HandleAsync ((CombatHitEvent) clientEvent);
+
+    private static ObjectType WireObjectType (Monster monster)
+    {
+        return monster.DataObjectType is GameObjectType.Monster_Flying or GameObjectType.Monster_Event_Flying
+            or GameObjectType.Special_Necromancer_Flyer
+            ? ObjectType.Monster_Flyer
+            : ObjectType.Monster;
+    }
+
+    private static void LogAction (ushort sourceGlobalId, ushort targetGlobalId, AttackFrameKind action, string result)
+    {
+        SphLogger.Info ($"DamageTargetHandler: Source [{sourceGlobalId:X4}] - Target [{targetGlobalId:X4}] - " +
+                       $"Action [{action}] - [{result}]");
+    }
+}

@@ -1,0 +1,42 @@
+> **SphereEmu-BR** is a community fork of [knelse/SphereEmu](https://github.com/knelse/SphereEmu) (licensed CC BY-NC-SA 4.0, see [LICENSE.md](LICENSE.md)).
+> Fan project, non-profit, not affiliated with the owners of Sphere. See [DISCLAIMER.md](DISCLAIMER.md), [docs/UPSTREAM.md](docs/UPSTREAM.md), [CONTRIBUTING.md](CONTRIBUTING.md) and [docs/INDEX.md](docs/INDEX.md).
+> Game files and data are **not** in this repository. `Tools/setup-assets.ps1` fetches them from the original project's public repository so the server can run.
+> **AI assistants:** read [AGENTS.md](AGENTS.md) and [docs/AI_QUICKSTART.md](docs/AI_QUICKSTART.md) first.
+> **How to install and run:** [docs/GETTING_STARTED.md](docs/GETTING_STARTED.md) (English) or [docs/GETTING_STARTED.pt-BR.md](docs/GETTING_STARTED.pt-BR.md) (Português). The setup notes further down in this file come from the original project and some of them (downloads, auto-updater) do not apply to this fork. Community texts for Discord are in [docs/COMMUNITY.md](docs/COMMUNITY.md).
+
+# SphereEmu
+Early WIP Sphere (old Russian MMORPG) server emulator
+
+Currently built with `Godot 4.7.1 Mono`.
+
+## Compatibility
+Running Sphere on latest hardware (notably, RDNA 3 Radeon 7000 series) might turn out into a good old 15 fps in cities experience.
+If that happens to you, dgVoodoo2 might help:
+1. Grab the latest release from https://github.com/dege-diosg/dgVoodoo2
+2. Unpack, run, add new profile for Sphere (click Add and navigate to game folder)
+3. In the General tab, select Direct3D 12 (feature level 12.0) for Output API. Others didn't work for me, but your mileage may vary
+4. In DirectX tab, select dgVoodoo Virtual 3D Accelerated Card for Videocard, 512-4096 MB for VRAM
+5. Keep everything else as is or tweak as you like
+6. Copy D3D9.dll (or all files to be safe) from MS\x86 to game folder (launcher does not care about added files)
+7. Launch the game. If everything worked correctly, cities should jump from 15 to 150+ fps
+8. If not, try different Output APIs and/or Videocards
+
+NB: client in the repo already has dgVoodoo bundled. If it breaks, try deleting D3D8, D3D9, D3DImm, DDRaw.dll from the repo.
+
+## Running the server
+
+1. Get and install prerequisities
+   1. .NET 9 SDK - version pinned in repo-root `global.json` (CI uses the same file). Install that exact SDK (or a later patch in the same band) from https://dotnet.microsoft.com/download/dotnet/9.0 into the machine-wide location (`C:\Program Files\dotnet`), then confirm with `dotnet --version`.
+   2. Godot (4.7.1 Mono or higher)
+2. Download the repo
+   - Install [Git LFS](https://git-lfs.com/) and run `git lfs pull` (needed for `GodotAssetSource/Terrain/TerrainMeshLibrary.tres`, used only when rebuilding terrain via TerrainGridFill).
+3. Update appsettings.json for your setup.
+4. Open project in Godot, build and run (editor uses the full `Godot/` tree). Exported slim builds:
+   - **Code / config / packet definitions**: auto-updater on launch checks the tip release [`windows-debug-slim`](https://github.com/knelse/SphereEmu/releases/tag/windows-debug-slim) (Latest). Historical builds are **prerelease** tags `master-<shortSha>` (12-char; commit subject as title; last 20 kept). UI shows installed vs latest; **Update**, **Continue**, or **Change version…**. Launch also verifies files against that version’s `file-manifest.json` and restores missing/modified files when the release is still available.
+   - **Heavy packs** (models/terrain/textures/terrainbake): always CRC-synced from the floating [`asset-bundles`](https://github.com/knelse/SphereEmu/releases/tag/asset-bundles) CDN, independent of the chosen code version.
+   Bake outputs live in `GodotAssetSource/TerrainBake/` (git-tracked, `.gdignore`; slim mounts via zip pack). Terrain MeshLibrary is under `GodotAssetSource/Terrain/` for the same reason.
+5. Run `sphereclient_patched.lnk` for the client (it runs `sphereclient_patched.exe` with `/login` command line arg)
+6. Launch the game, enter desired login and password. This should create a `Players` DB entry with your login and pwd hash
+7. Next time, use those credentials or create a new user if you like
+
+Multiplayer is technically supported at this moment, but everything would act strangely

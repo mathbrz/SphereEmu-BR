@@ -1,0 +1,21 @@
+root = true
+
+[*]
+end_of_line = lf
+insert_final_newline = true
+
+[*.cs]
+
+# CS1998: Async method lacks 'await' operators and will run synchronously
+dotnet_diagnostic.CS1998.severity = none
+
+# ReSharper: same inspection family (sync bodies on async methods)
+resharper_async_method_without_await_highlighting = none
+resharper_async_override_method_without_await_highlighting = none
+resharper_async_void_method_without_await_highlighting = none
+resharper_async_void_override_method_without_await_highlighting = none
+
+# Space before ( on calls and declarations; space after a cast
+csharp_space_between_method_call_name_and_opening_parenthesis = true
+csharp_space_between_method_declaration_name_and_open_parenthesis = true
+csharp_space_after_cast = true

@@ -1,0 +1,1293 @@
+using System;
+using System.Collections.Generic;
+using SphereHelpers.Extensions;
+using SphServer.Helpers;
+using SphServer.Packets;
+using SphServer.Shared.BitStream;
+using SphServer.Shared.Logger;
+using SphServer.Shared.Networking.Mbc;
+using SphServer.System;
+using static SphServer.Shared.Networking.DataModel.Serializers.SphereDbEntrySerializerBase;
+
+// ReSharper disable UnusedMember.Global
+
+namespace SphServer.Shared.Networking;
+
+public static class CommonPackets
+{
+    public static byte[] DeleteCharacterResult (ushort playerIndex, bool deleted)
+    {
+        var stream = SphBitStream.GetWriteBitStream ();
+        stream.WriteByte (0, 1);
+        stream.WriteUInt16 (0, 15);
+        stream.WriteUInt16 (SphBitStream.ByteSwap (playerIndex), 16);
+        stream.WriteByte (0, 2);
+        stream.WriteUInt16 ((ushort) ObjectType.Player, 12);
+        WriteCredentialsManagerRegion (stream, 42, deleted ? [0, 0, 0, 0] : [1, 0, 0, 0]);
+        stream.WriteByte (0, 7);
+        return Packet.ToByteArray (stream.GetStreamData (), 1);
+    }
+
+    // Clears g_6008: the client sets it on every attack or use and blocks further ones until this
+    // frame
+    public static byte[] ClearUseToutAck(ushort playerIndex) =>
+    [
+        0x0F, 0x00, 0x2C, 0x01, 0x00, 0x00, 0x00, MajorByte(playerIndex), MinorByte(playerIndex),
+        0x08, 0x40, 0x63, 0x08, 0x00, 0x00
+    ];
+
+    // INTERACT 0x0A + 0x050D; trailer is 85 06 83/03 then 15-bit remaining HP (the longer 3F/BF
+    // trailer is not written)
+    public static byte[] AttackTargetEcho(ushort targetId, ushort sourceId, int damagePlus30000, int remainingHealth,
+        ObjectType objectType = ObjectType.Monster)
+    {
+        var stream = SphBitStream.GetWriteBitStream();
+        stream.WriteUInt16(targetId, 16);
+        stream.WriteByte(0, 2);
+        stream.WriteUInt16((ushort)objectType, 10);
+        stream.WriteByte(0, 1);
+        stream.WriteByte(0x0A, 8);
+        stream.WriteUInt16(0x050D, 16);
+        stream.WriteUInt16(SphBitStream.ByteSwap(sourceId), 16);
+        stream.WriteByte(0, 8);
+        stream.WriteUInt16((ushort)damagePlus30000, 16);
+        stream.WriteBytes([0, 0]);
+        stream.WriteByte(0b111, 3);
+
+        return Packet.ToByteArray(stream.GetStreamData(), 3);
+    }
+
+    // INTERACT+0x040D plays the death program; moduleTag-0 EKill in the same tick halt_interpreters
+    // when g_063C is 0 and skips the anim
+    public static byte[] EntityKilled(ushort clientLocalEntityId, ushort clientLocalKillerId)
+    {
+        var stream = SphBitStream.GetWriteBitStream();
+        stream.WriteUInt16(clientLocalEntityId, 16);
+        stream.WriteByte(0, 2);
+        stream.WriteUInt16((ushort)ObjectType.Monster, 10);
+        stream.WriteByte(0, 1);
+        // interaction
+        stream.WriteByte(0x0A, 8);
+        // death
+        stream.WriteUInt16(0x040D, 16);
+        stream.WriteUInt16(SphBitStream.ByteSwap(clientLocalKillerId), 16);
+        stream.WriteByte(0, 8);
+        stream.WriteByte(0, 7);
+        stream.WriteByte(0b1111, 4);
+        return Packet.ToByteArray(stream.GetStreamData(), 3);
+    }
+
+    public static readonly byte[]
+        // ReadyToLoadInitialData = { 0x0A, 0x00, 0xC8, 0x00, 0x14, 0x05, 0x00, 0x00, 0x1F, 0x42 };
+        ReadyToLoadInitialData = [0x0A, 0x00, 0xC8, 0x00, 0x6C, 0x07, 0x00, 0x00, 0x40, 0x0E];
+
+    public static readonly byte[]
+        ReadyToLoadInitialDataReconnect = [0x0A, 0x00, 0xC8, 0x00, 0x94, 0x05, 0x00, 0x00, 0x2F, 0x64];
+
+    // S2C TCP keepalive, length 4, channel 0x01F4; the Echo HUD measures the reply to the client's
+    // keepalive
+    public static readonly byte[]
+        TransmissionEndPacket = [0x04, 0x00, 0xF4, 0x01];
+
+    /// <summary>
+    /// Bitstream-packed: a byte poke after 20 10 overlaps format-'f' count bit 6 (0x04 vs 0x44) and
+    /// the following region-12 tags
+    /// </summary>
+    public static byte[] ServerCredentials(ushort playerIndex)
+    {
+        var currentSphereTime = TimeHelper.EncodeCurrentSphereDateTime();
+        var stream = SphBitStream.GetWriteBitStream();
+        stream.WriteByte(0, 1); // has_position
+        stream.WriteUInt16(512, 15); // tick: captured 00 04 header
+        // High byte then low byte, matching CharacterSelectStartData
+        stream.WriteByte(MajorByte(playerIndex), 8);
+        stream.WriteByte(MinorByte(playerIndex), 8);
+        stream.WriteByte(0, 2); // process_id high
+        stream.WriteUInt16((ushort)ObjectType.Player, 12);
+
+        stream.WriteByte(1, 7); // wire = region 0 + 1 (Owner)
+        stream.WriteByte(1, 5);
+        stream.WriteByte(4, 8);
+        stream.WriteBytes(currentSphereTime, 4, true);
+
+        WriteCredentialsManagerRegion(stream, 62, [0x01, 0, 0, 0, 0, 0, 0, 0, 0]);
+        WriteCredentialsManagerRegion(stream, 59,
+            [0x01, 0, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0, 0, 0, 0, 0, 0, 0, 0]);
+        WriteCredentialsManagerRegion(stream, 59, [0, 0, 0]);
+
+        return Packet.ToByteArray(stream.GetStreamData(), 1);
+    }
+
+    public static byte[] CharacterSelectStartData(ushort playerIndex)
+    {
+        return
+        [
+            0x52, 0x00, 0x2C, 0x01, 0x00, 0x00, 0x04, MajorByte(playerIndex), MinorByte(playerIndex), 0x08, 0x40,
+            0x80, 0x10, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00
+        ];
+    }
+
+    public static byte[] CreateNewCharacterData(ushort playerIndex)
+    {
+        return
+        [
+            0x6C, 0x00, 0x2C, 0x01, 0x00, 0x00, 0x04, MajorByte(playerIndex), MinorByte(playerIndex), 0x08, 0x40,
+            0x60, 0x79, 0x91, 0x01, 0x90, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0C, 0xC8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xC8, 0x00, 0x90, 0x01, 0x90, 0x01, 0x10, 0x00, 0x10, 0x00,
+            0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0xFC, 0xFF, 0xFF, 0xFF, 0x03, 0x00, 0x00, 0x00, 0x00
+        ];
+    }
+
+    public static byte[] AccountOutdated(ushort playerIndex)
+    {
+        return
+        [
+            0x0E, 0x00, 0x2C, 0x01, 0x00, 0x00, 0x04, MajorByte(playerIndex),
+            MinorByte(playerIndex), 0x08, 0x40, 0xC0, 0x01, 0x00
+        ];
+    }
+
+    public static byte[] CannotConnect(ushort playerIndex)
+    {
+        return
+        [
+            0x0E, 0x00, 0x2C, 0x01, 0x00, 0x00, 0x04, MajorByte(playerIndex),
+            MinorByte(playerIndex), 0x08, 0x40, 0xA0, 0x00, 0x00
+        ];
+    }
+
+    public static byte[] NameAlreadyExists(ushort playerIndex)
+    {
+        return
+        [
+            0x0E, 0x00, 0x2C, 0x01, 0x00, 0x00, 0x04, MajorByte(playerIndex),
+            MinorByte(playerIndex), 0x08, 0x40, 0x00, 0x01, 0x00
+        ];
+    }
+
+    public static byte[] NameCheckPassed(ushort playerIndex)
+    {
+        return
+        [
+            0x0E, 0x00, 0x2C, 0x01, 0x00, 0x00, 0x04, MajorByte(playerIndex),
+            MinorByte(playerIndex), 0x08, 0x40, 0x80, 0x00, 0x00
+        ];
+    }
+
+    public static byte[] AccountAlreadyInUse(ushort playerIndex)
+    {
+        return
+        [
+            0x0E, 0x00, 0x2C, 0x01, 0x00, 0x00, 0x04, MajorByte(playerIndex),
+            MinorByte(playerIndex), 0x08, 0x40, 0xA0, 0x00, 0x00
+        ];
+    }
+
+    public static byte[] ClientInvulnerableEffect(ushort playerIndex)
+    {
+        return
+        [
+            0x14, 0x00, 0x2C, 0x01, 0x00, 0x00, 0x04, MajorByte(playerIndex),
+            MinorByte(playerIndex), 0x08, 0xC0, 0x42, 0x60, 0xFE, 0xD3, 0x90, 0x10, 0xB0, 0x17, 0x00
+        ];
+    }
+
+    public static byte[] CurrentMpUpdatePing(ushort playerIndex, int currentMp)
+    {
+        var stream = SphBitStream.GetWriteBitStream();
+        stream.WriteByte(0x04);
+        stream.WriteUInt16(SphBitStream.ByteSwap(playerIndex));
+        stream.WriteBytes([0x08, 0xC0, 0x42]);
+        stream.WriteByte(0b100000, 6);
+        stream.WriteUInt16((ushort)Math.Clamp(currentMp, 0, 16383), 14);
+        stream.WriteByte(0b1101, 4);
+        stream.WriteBytes([0x90, 0x08, 0xB0, 0x07]);
+        return Packet.ToByteArray(stream.GetStreamData(), 2);
+    }
+
+    /// <summary>
+    ///     _main ClientSky (region 4, process 0): the u32 world clock counter. See <c>GameClock</c>.
+    /// </summary>
+    public static byte[] BuildClientSky(uint counter)
+    {
+        var stream = SphBitStream.GetWriteBitStream();
+        stream.WriteByte(0, 1); // has_position
+        stream.WriteUInt16(0, 15); // tick
+        stream.WriteUInt16(0, 16); // process id: the _main singleton
+        stream.WriteByte(0, 2); // process_id high
+        stream.WriteUInt16(1, 12); // module tag _main
+        stream.WriteByte(5, 7); // wire = region 4 + 1
+        stream.WriteUInt16((ushort)counter, 16);
+        stream.WriteUInt16((ushort)(counter >> 16), 16);
+        return Packet.ToByteArray(stream.GetStreamData(), 1);
+    }
+
+    public static byte[] FifteenSecondPing(ushort playerIndex)
+    {
+        return
+        [
+            0x10, 0x00, 0x2C, 0x01, 0x00, 0x00, 0x04, MajorByte(playerIndex),
+            MinorByte(playerIndex), 0x08, 0x40, 0x81, 0x93, 0xEE, 0xE4, 0x08
+        ];
+    }
+
+    /// <summary>
+    /// _stat tag 4, u10 count; region 61 is EInit, region 0 is the update; process_id is the server
+    /// singleton 0xC00, not the player id
+    /// </summary>
+    public static byte[] PublishPlayerCount(int playerCount, bool eInit = false)
+    {
+        const ushort statProcessId = 0xC00;
+        const ushort statModuleTag = 4;
+        var region = eInit ? 61 : 0;
+        var count = (ushort)Math.Clamp(playerCount, 0, 1023);
+
+        var stream = SphBitStream.GetWriteBitStream();
+        stream.WriteByte(0, 1); // has_position
+        stream.WriteUInt16(0, 15); // tick
+        stream.WriteUInt16(statProcessId, 16);
+        stream.WriteByte(0, 2); // process_id high
+        stream.WriteUInt16(statModuleTag, 12);
+        stream.WriteByte((byte)(region + 1), 7); // wire = region + 1
+        stream.WriteUInt16(count, 10);
+
+        return Packet.ToByteArray(stream.GetStreamData(), 1);
+    }
+
+    // Soft remove: moduleTag-0 EKill halt_interpreters unless g_063C is set, and it aborts an
+    // in-progress EntityKilled anim
+    public static byte[] DespawnEntity(ushort ID)
+    {
+        return
+        [
+            0x0B, 0x00, 0x2C, 0x01, 0x00, 0x00, 0x00, MinorByte(ID), MajorByte(ID), 0x00, 0x00
+        ];
+    }
+
+    /// <summary>
+    /// _player region 6: three empty array4 u7 weapon names, then nine u7 wear bytes, boots through
+    /// helmet; in-place, no despawn
+    /// </summary>
+    public static byte[] BuildSetWornGearPacket(ushort entityId, ReadOnlySpan<byte> wearPattern9,
+        string linkSword = "", string linkAxe = "", string linkArb = "")
+    {
+        if (wearPattern9.Length != 9)
+        {
+            throw new ArgumentException("SetWornGear wear pattern must be 9 bytes (b00..b08).", nameof(wearPattern9));
+        }
+
+        const ushort playerModuleTag = (ushort)ObjectType.Player;
+        var stream = SphBitStream.GetWriteBitStream();
+        stream.WriteByte(0, 1); // has_position
+        stream.WriteUInt16(0, 15); // tick
+        stream.WriteUInt16(entityId, 16);
+        stream.WriteByte(0, 2); // process_id high
+        stream.WriteUInt16((ushort)(playerModuleTag & 0xFFF), 12);
+        stream.WriteByte(7, 7); // wire = region 6 + 1
+
+        WriteArray4U7String(stream, linkSword);
+        WriteArray4U7String(stream, linkAxe);
+        WriteArray4U7String(stream, linkArb);
+        for (var i = 0; i < 9; i++)
+        {
+            stream.WriteByte((byte)(wearPattern9[i] & 0x7F), 7);
+        }
+
+        return Packet.ToByteArray(stream.GetStreamData(), 1);
+    }
+
+    /// <summary>
+    /// _player region 4: u4 command plus an array8 of u8 payload
+    /// </summary>
+    public static byte[] BuildPlayerContManCommand(ushort entityId, byte command, ReadOnlySpan<byte> payload)
+    {
+        if (command > 15)
+        {
+            throw new ArgumentOutOfRangeException(nameof(command), "ContMan command is u4.");
+        }
+
+        if (payload.Length > 255)
+        {
+            throw new ArgumentException("ContMan array8 payload max length is 255.", nameof(payload));
+        }
+
+        const ushort playerModuleTag = (ushort)ObjectType.Player;
+        var stream = SphBitStream.GetWriteBitStream();
+        stream.WriteByte(0, 1); // has_position
+        stream.WriteUInt16(0, 15); // tick
+        stream.WriteUInt16(entityId, 16);
+        stream.WriteByte(0, 2); // process_id high
+        stream.WriteUInt16((ushort)(playerModuleTag & 0xFFF), 12);
+        stream.WriteByte(5, 7); // wire = region 4 + 1 (ContMan)
+        stream.WriteByte(command, 4);
+        stream.WriteByte((byte)payload.Length, 8);
+        stream.WriteBytes(payload.ToArray(), payload.Length, true);
+
+        return Packet.ToByteArray(stream.GetStreamData(), 1);
+    }
+
+    /// <summary>
+    /// ContMan cmd 9 len5: killer_id u24 plus hp_delta (raw-30000); sourceId == entityId is a
+    /// self-change
+    /// </summary>
+    public static byte[] BuildPlayerApplyHpDelta(ushort entityId, ushort sourceId, int hpDelta)
+    {
+        var wireDelta = unchecked((ushort)(hpDelta + 30000));
+        byte[] payload =
+        [
+            (byte)(sourceId & 0xFF),
+            (byte)((sourceId >> 8) & 0xFF),
+            0,
+            (byte)(wireDelta & 0xFF),
+            (byte)((wireDelta >> 8) & 0xFF)
+        ];
+        return BuildPlayerContManCommand(entityId, command: 9, payload);
+    }
+
+    /// <summary>
+    /// ContMan cmd 9 len 2: u16 current HP. CycleSend leaves its HP&lt;=0 yield once this is above 0
+    /// </summary>
+    public static byte[] BuildPlayerSetCurrentHp (ushort entityId, ushort currentHp)
+    {
+        byte[] payload =
+        [
+            (byte) (currentHp & 0xFF),
+            (byte) ((currentHp >> 8) & 0xFF)
+        ];
+        return BuildPlayerContManCommand (entityId, command: 9, payload);
+    }
+
+    /// <summary>
+    /// Manager cmd 15 len 16: x, y, z, yaw. Restarts PrgMove
+    /// </summary>
+    public static byte[] BuildPlayerSetCoordinates (ushort entityId, float x, float y, float z, float yaw)
+    {
+        var payload = new byte[16];
+        BitConverter.GetBytes (x).CopyTo (payload, 0);
+        BitConverter.GetBytes (y).CopyTo (payload, 4);
+        BitConverter.GetBytes (z).CopyTo (payload, 8);
+        BitConverter.GetBytes (yaw).CopyTo (payload, 12);
+        return BuildPlayerManagerCommand (entityId, command: 15, payload);
+    }
+
+    /// <summary>
+    /// Manager cmd 18 len 2: effect id attached to the character object
+    /// </summary>
+    public static byte[] BuildPlayerPlayEffect (ushort entityId, ushort effectId)
+    {
+        byte[] payload =
+        [
+            (byte) (effectId & 0xFF),
+            (byte) ((effectId >> 8) & 0xFF)
+        ];
+        return BuildPlayerManagerCommand (entityId, command: 18, payload);
+    }
+
+    /// <summary>
+    ///     _player Manager cmd 67, empty payload: retail sends it once a cast is over (2.36 s after a use whose tooltip
+    ///     said 2.3 s), which re-arms the mantra in the client.
+    /// </summary>
+    public static byte[] BuildPlayerMantraReady(ushort entityId) =>
+        BuildPlayerManagerCommand(PlayerProcessId(entityId), command: 67, []);
+
+    /// <summary>
+    /// Manager region 12 cmd 9 mode 2: sprintf gMsg(id) with one u16, SendSys2 length 9
+    /// </summary>
+    public static byte[] BuildPlayerSystemChatSprintf(ushort entityId, ushort gmsgId, short formatArg,
+        uint rgbColor)
+    {
+        byte[] payload =
+        [
+            2, // mode 2 = sprintf gMsg + chat
+            (byte)(gmsgId & 0xFF),
+            (byte)((gmsgId >> 8) & 0xFF),
+            (byte)(rgbColor & 0xFF),
+            (byte)((rgbColor >> 8) & 0xFF),
+            (byte)((rgbColor >> 16) & 0xFF),
+            (byte)((rgbColor >> 24) & 0xFF),
+            (byte)(formatArg & 0xFF),
+            (byte)((formatArg >> 8) & 0xFF)
+        ];
+        return BuildPlayerManagerCommand(entityId, command: 9, payload);
+    }
+
+    /// <summary>
+    /// _player region 12: u8 command plus an array8 of u8 payload
+    /// </summary>
+    public static byte[] BuildPlayerManagerCommand(ushort entityId, byte command, ReadOnlySpan<byte> payload)
+    {
+        if (payload.Length > 255)
+        {
+            throw new ArgumentException("Manager array8 payload max length is 255.", nameof(payload));
+        }
+
+        const ushort playerModuleTag = (ushort)ObjectType.Player;
+        var stream = SphBitStream.GetWriteBitStream();
+        stream.WriteByte(0, 1); // has_position
+        stream.WriteUInt16(0, 15); // tick
+        stream.WriteUInt16(entityId, 16);
+        stream.WriteByte(0, 2); // process_id high
+        stream.WriteUInt16((ushort)(playerModuleTag & 0xFFF), 12);
+        stream.WriteByte(13, 7); // wire = region 12 + 1 (Manager)
+        stream.WriteByte(command, 8);
+        stream.WriteByte((byte)payload.Length, 8);
+        stream.WriteBytes(payload.ToArray(), payload.Length, true);
+
+        return Packet.ToByteArray(stream.GetStreamData(), 1);
+    }
+
+    /// <summary>
+    ///     _player Manager cmd 56: the purse balance as u32. Retail sends it at login and after every
+    ///     trade; it is the only thing that refreshes the money display.
+    /// </summary>
+    public static byte[] BuildPlayerMoney(ushort entityId, int money)
+    {
+        return BuildPlayerManagerCommand(PlayerProcessId(entityId), command: 56, BitConverter.GetBytes((uint)money));
+    }
+
+    /// <summary>
+    ///     _player ContMan ClearContainerSlots (region 4 / cmd 3, one zero byte). Retail opens the item
+    ///     declarations with it; it starts the cell table that later UpdateContainerSlot messages fill.
+    /// </summary>
+    public static byte[] BuildPlayerClearSlots(ushort entityId, byte flag = 0)
+    {
+        const ushort playerModuleTag = (ushort)ObjectType.Player;
+        var stream = SphBitStream.GetWriteBitStream();
+        stream.WriteByte(0, 1); // has_position
+        stream.WriteUInt16(0, 15); // tick
+        stream.WriteUInt16(PlayerProcessId(entityId), 16);
+        stream.WriteByte(0, 2); // process_id high
+        stream.WriteUInt16((ushort)(playerModuleTag & 0xFFF), 12);
+        stream.WriteByte(5, 7); // wire = region 4 + 1
+        stream.WriteByte(3, 4); // command: ClearContainerSlots
+        stream.WriteByte(1, 8); // payload length
+        stream.WriteByte(flag, 8);
+        return Packet.ToByteArray(stream.GetStreamData(), 1);
+    }
+
+    /// <summary>
+    ///     Monster module region 20 (wire 21), the swing animation retail sends just before the hit on the
+    ///     player: u32 3 and a 4-byte array holding 29 or 30 (not the damage; the captures vary it by one).
+    /// </summary>
+    public static byte[] BuildMonsterAttackAnimation(ushort monsterId, ushort moduleTag)
+    {
+        var stream = SphBitStream.GetWriteBitStream();
+        stream.WriteByte(0, 1); // has_position
+        stream.WriteUInt16(0, 15); // tick
+        stream.WriteUInt16(monsterId, 16);
+        stream.WriteByte(0, 2); // process_id high
+        stream.WriteUInt16((ushort)(moduleTag & 0xFFF), 12);
+        stream.WriteByte(21, 7); // wire = region 20 + 1
+        stream.WriteUInt16(3, 16);
+        stream.WriteUInt16(0, 16);
+        stream.WriteByte(4, 8); // array length
+        stream.WriteUInt16(30, 16);
+        stream.WriteUInt16(0, 16);
+        return Packet.ToByteArray(stream.GetStreamData(), 1);
+    }
+
+
+    /// <summary>Container module ClearContainerSlots (flag 1 wipes the client's cell table before a redeclare).</summary>
+    public static byte[] BuildContainerClear(int containerId, ushort objectType, byte flag) =>
+        BuildItemModuleCommand((ushort)containerId, objectType, 3, [flag]);
+
+    /// <summary>
+    ///     _player Manager cmd 16 ServerJump with the flag only. Retail adds a u16 that is the id of the
+    ///     item declared in slot 57 just before; sending one that names no object here made the client
+    ///     load for about 20 s and drop everything sent meanwhile.
+    /// </summary>
+    public static byte[] BuildPlayerServerJump(ushort entityId) =>
+        BuildPlayerManagerCommand(PlayerProcessId(entityId), command: 16, [1]);
+
+    /// <summary>
+    ///     _player NManager (region 13) cmd 2, u5 command and u8 length: flag 2 plus the two u32 session
+    ///     ids the client stores. Any NManager message restarts the activity controller, which is what
+    ///     lifts the dead state after a respawn. The ids stay zero: this server never assigns any.
+    /// </summary>
+    public static byte[] BuildPlayerClearActivityState(ushort entityId)
+    {
+        const ushort playerModuleTag = (ushort)ObjectType.Player;
+        var stream = SphBitStream.GetWriteBitStream();
+        stream.WriteByte(0, 1); // has_position
+        stream.WriteUInt16(0, 15); // tick
+        stream.WriteUInt16(PlayerProcessId(entityId), 16);
+        stream.WriteByte(0, 2); // process_id high
+        stream.WriteUInt16((ushort)(playerModuleTag & 0xFFF), 12);
+        stream.WriteByte(14, 7); // wire = region 13 + 1 (NManager)
+        stream.WriteByte(2, 5); // command: ClearActivityState
+        stream.WriteByte(9, 8); // payload length
+        stream.WriteByte(2, 8); // flag
+        for (var i = 0; i < 4; i++)
+        {
+            stream.WriteUInt16(0, 16);
+        }
+
+        return Packet.ToByteArray(stream.GetStreamData(), 1);
+    }
+
+    /// <summary>
+    ///     Item module ChangeAmount (region 4 / cmd 12, u16 count). The stack's own size; the slot update
+    ///     alone does not redraw it, so retail sends both.
+    /// </summary>
+    public static byte[] BuildItemAmount(ushort itemId, ushort objectType, ushort count)
+    {
+        var stream = SphBitStream.GetWriteBitStream();
+        stream.WriteByte(0, 1); // has_position
+        stream.WriteUInt16(0, 15); // tick
+        stream.WriteUInt16(itemId, 16);
+        stream.WriteByte(0, 2); // process_id high
+        stream.WriteUInt16((ushort)(objectType & 0xFFF), 12);
+        stream.WriteByte(5, 7); // wire = region 4 + 1
+        stream.WriteByte(12, 8); // command: ChangeAmount
+        stream.WriteByte(2, 8); // payload length
+        stream.WriteUInt16(count, 16);
+        return Packet.ToByteArray(stream.GetStreamData(), 1);
+    }
+
+    /// <summary>
+    ///     Item module HideOrUnequip (region 4 / cmd 1, empty). Retail sends it for a sold item; without it
+    ///     the sale window keeps drawing the item after the trade closes.
+    /// </summary>
+    public static byte[] BuildItemHide(ushort itemId, ushort objectType)
+    {
+        var stream = SphBitStream.GetWriteBitStream();
+        stream.WriteByte(0, 1); // has_position
+        stream.WriteUInt16(0, 15); // tick
+        stream.WriteUInt16(itemId, 16);
+        stream.WriteByte(0, 2); // process_id high
+        stream.WriteUInt16((ushort)(objectType & 0xFFF), 12);
+        stream.WriteByte(5, 7); // wire = region 4 + 1
+        stream.WriteByte(1, 8); // command: HideOrUnequip
+        stream.WriteByte(0, 8); // payload length
+        return Packet.ToByteArray(stream.GetStreamData(), 1);
+    }
+
+    /// <summary>
+    ///     _player UpdateContainerSlot (region 4 / cmd 2, 5-byte form): u4 command, u8 length, then u8 slot,
+    ///     u16 count, 16 zero bits. Retail uses it to grow a stack in place instead of declaring a new item.
+    /// </summary>
+    public static byte[] BuildPlayerSlotCount(ushort entityId, byte wireSlot, ushort count)
+    {
+        const ushort playerModuleTag = (ushort)ObjectType.Player;
+        var stream = SphBitStream.GetWriteBitStream();
+        stream.WriteByte(0, 1); // has_position
+        stream.WriteUInt16(0, 15); // tick
+        stream.WriteUInt16(PlayerProcessId(entityId), 16);
+        stream.WriteByte(0, 2); // process_id high
+        stream.WriteUInt16((ushort)(playerModuleTag & 0xFFF), 12);
+        stream.WriteByte(5, 7); // wire = region 4 + 1
+        stream.WriteByte(2, 4); // command: UpdateContainerSlot
+        stream.WriteByte(5, 8); // payload length
+        stream.WriteByte(wireSlot, 8);
+        stream.WriteUInt16(count, 16);
+        stream.WriteUInt16(0, 16);
+        return Packet.ToByteArray(stream.GetStreamData(), 1);
+    }
+
+    /// <summary>
+    ///     _player Manager cmd 8 (S2C): u24 bought item id, u32 unit price, u32 count. The client turns
+    ///     it into the "You bought ..." chat line.
+    /// </summary>
+    public static byte[] BuildPlayerPurchaseNotice(ushort entityId, int itemId, int unitPrice, int count)
+    {
+        var payload = new byte[11];
+        WriteU24(payload, 0, itemId);
+        BitConverter.GetBytes((uint)unitPrice).CopyTo(payload, 3);
+        BitConverter.GetBytes((uint)count).CopyTo(payload, 7);
+        return BuildPlayerManagerCommand(PlayerProcessId(entityId), command: 8, payload);
+    }
+
+    /// <summary>
+    ///     _player Manager cmd 7 (S2C): the trader's offer for the item in a sale slot. An offer of
+    ///     uint.MaxValue with no trader clears the slot (retail answers a closed sale that way).
+    /// </summary>
+    public static byte[] BuildPlayerTradeOffer(ushort entityId, byte slot, uint offer, int? traderId)
+    {
+        var payload = new byte[traderId is null ? 5 : 8];
+        payload[0] = slot;
+        BitConverter.GetBytes(offer).CopyTo(payload, 1);
+        if (traderId is not null)
+        {
+            WriteU24(payload, 5, traderId.Value);
+        }
+
+        return BuildPlayerManagerCommand(PlayerProcessId(entityId), command: 7, payload);
+    }
+
+    /// <summary>
+    ///     _player Manager cmd 13 (S2C): u24 item id, u24 amount paid, u24 trader id, u32 0, u24 0,
+    ///     u16 item ObjectType. The client prints "... bought it ... for N".
+    /// </summary>
+    public static byte[] BuildPlayerSaleConfirm(ushort entityId, int itemId, int amount, int traderId,
+        ushort itemType)
+    {
+        var payload = new byte[18];
+        WriteU24(payload, 0, itemId);
+        WriteU24(payload, 3, amount);
+        WriteU24(payload, 6, traderId);
+        payload[16] = (byte)(itemType & 0xFF);
+        payload[17] = (byte)(itemType >> 8);
+        return BuildPlayerManagerCommand(PlayerProcessId(entityId), command: 13, payload);
+    }
+
+    /// <summary>
+    ///     _player UpdateContainerSlot, 8-byte form: u8 slot, u24 item (0 empties the cell), u32 value.
+    ///     The value is the stack's weight in grams (a container adds what it carries).
+    /// </summary>
+    public static byte[] BuildPlayerCell(ushort entityId, byte wireSlot, int itemId, uint value)
+    {
+        var payload = new byte[8];
+        payload[0] = wireSlot;
+        WriteU24(payload, 1, itemId);
+        BitConverter.GetBytes(value).CopyTo(payload, 4);
+        return BuildPlayerContManCommand(PlayerProcessId(entityId), 2, payload);
+    }
+
+    /// <summary>_player UpdateContainerSlot, 5-byte form: u8 slot, u32 value. Changes the load of a held container.</summary>
+    public static byte[] BuildPlayerSlotValue(ushort entityId, byte wireSlot, uint value)
+    {
+        var payload = new byte[5];
+        payload[0] = wireSlot;
+        BitConverter.GetBytes(value).CopyTo(payload, 1);
+        return BuildPlayerContManCommand(PlayerProcessId(entityId), 2, payload);
+    }
+
+    /// <summary>_player UpdateContainerSlot, 1-byte form: releases the slot.</summary>
+    public static byte[] BuildPlayerSlotRelease(ushort entityId, byte wireSlot) =>
+        BuildPlayerContManCommand(PlayerProcessId(entityId), 2, [wireSlot]);
+
+    /// <summary>Container module UpdateContainerSlot (u8 command, u8 length): one cell of a bag, book, bank or chest.</summary>
+    public static byte[] BuildContainerCell(int containerId, ushort objectType, byte cell, int itemId, uint value)
+    {
+        var payload = new byte[8];
+        payload[0] = cell;
+        WriteU24(payload, 1, itemId);
+        BitConverter.GetBytes(value).CopyTo(payload, 4);
+        return BuildItemModuleCommand((ushort)containerId, objectType, 2, payload);
+    }
+
+    /// <summary>
+    ///     Container module UpdateContainerSlot, 5-byte form: u8 cell, u32 count. Retail answers a stack added to another
+    ///     with this alone, naming the new total in the destination cell.
+    /// </summary>
+    public static byte[] BuildContainerCellCount(int containerId, ushort objectType, byte cell, uint count)
+    {
+        var payload = new byte[5];
+        payload[0] = cell;
+        BitConverter.GetBytes(count).CopyTo(payload, 1);
+        return BuildItemModuleCommand((ushort)containerId, objectType, 2, payload);
+    }
+
+    /// <summary>Container module UpdateContainerSlot, 1-byte form: empties a cell.</summary>
+    public static byte[] BuildContainerCellRelease(int containerId, ushort objectType, byte cell) =>
+        BuildItemModuleCommand((ushort)containerId, objectType, 2, [cell]);
+
+    /// <summary>
+    ///     Item module SpawnInit (region 4 / cmd 0, u24 parent): re-parents an item the client already
+    ///     knows. Retail precedes it with a TransformState that parks the item at the contained position.
+    /// </summary>
+    public static byte[] BuildItemSpawnInit(int itemId, ushort objectType, int parentId)
+    {
+        var payload = new byte[3];
+        WriteU24(payload, 0, parentId);
+        return BuildItemModuleCommand((ushort)itemId, objectType, 0, payload);
+    }
+
+    /// <summary>Item module TransformState (region 2): the contained position (x 1e6) with a zero angle.</summary>
+    public static byte[] BuildItemContainedTransform(int itemId, ushort objectType) =>
+        BuildItemTransform(itemId, objectType, 1000000.0f, 0f, 0f, 0, 2);
+
+    /// <summary>Item module TransformState with a world position; state 1 lies on the ground, 2 sits in a container.</summary>
+    public static byte[] BuildItemTransform(int itemId, ushort objectType, float x, float y, float z, byte angle,
+        byte state)
+    {
+        var stream = SphBitStream.GetWriteBitStream();
+        stream.WriteByte(0, 1); // has_position
+        stream.WriteUInt16(0, 15); // tick
+        stream.WriteUInt16((ushort)itemId, 16);
+        stream.WriteByte(0, 2); // process_id high
+        stream.WriteUInt16((ushort)(objectType & 0xFFF), 12);
+        stream.WriteByte(3, 7); // wire = region 2 + 1 (TransformState)
+
+        // Written as halves: the shared writer sizes a value by its magnitude and drops a set top bit.
+        foreach (var value in new[] { x, y, z })
+        {
+            var bits = BitConverter.SingleToUInt32Bits(value);
+            stream.WriteUInt16((ushort)bits, 16);
+            stream.WriteUInt16((ushort)(bits >> 16), 16);
+        }
+
+        stream.WriteByte(angle, 8);
+        stream.WriteByte(state, 2);
+        return Packet.ToByteArray(stream.GetStreamData(), 1);
+    }
+
+    /// <summary>An item module's region 4 command with a u8 length, addressed by the item's own id.</summary>
+    private static byte[] BuildItemModuleCommand(ushort itemId, ushort objectType, byte command,
+        ReadOnlySpan<byte> payload)
+    {
+        var stream = SphBitStream.GetWriteBitStream();
+        stream.WriteByte(0, 1); // has_position
+        stream.WriteUInt16(0, 15); // tick
+        stream.WriteUInt16(itemId, 16);
+        stream.WriteByte(0, 2); // process_id high
+        stream.WriteUInt16((ushort)(objectType & 0xFFF), 12);
+        stream.WriteByte(5, 7); // wire = region 4 + 1
+        stream.WriteByte(command, 8);
+        stream.WriteByte((byte)payload.Length, 8);
+        stream.WriteBytes(payload.ToArray(), payload.Length, true);
+        return Packet.ToByteArray(stream.GetStreamData(), 1);
+    }
+
+    // The MBC process id is the client index with its bytes swapped, like the item record owner.
+    private static ushort PlayerProcessId(ushort clientIndex) => SphBitStream.ByteSwap(clientIndex);
+
+    private static void WriteU24(byte[] target, int offset, int value)
+    {
+        target[offset] = (byte)(value & 0xFF);
+        target[offset + 1] = (byte)((value >> 8) & 0xFF);
+        target[offset + 2] = (byte)((value >> 16) & 0xFF);
+    }
+
+    /// <summary>
+    /// MBC 0x67 / format 'g': 1 sign bit, 2 tier bits, magnitude 3/7/14/31
+    /// </summary>
+    public static void WriteMbcVarint(SphWriteStream stream, int value)
+    {
+        var negative = value < 0;
+        var magnitude = unchecked((uint)(negative ? -value : value));
+        var selector = magnitude < 8 ? 0u : magnitude < 128 ? 1u : magnitude < 16384 ? 2u : 3u;
+        ReadOnlySpan<int> widths = [3, 7, 14, 31];
+        stream.WriteByte(negative ? (byte)1 : (byte)0, 1);
+        stream.WriteByte((byte)selector, 2);
+        stream.WriteUInt32(magnitude, widths[(int)selector]);
+    }
+
+    /// <summary>
+    /// Region 8: hit_type u16, two varints, flags u3; hit_type 0 is process 49 (never replies), and
+    /// HP at 0 sticks CycleSend until HP is above 0
+    /// </summary>
+    public static byte[] BuildPlayerReceiveHit(ushort entityId, ushort hitType, int hpDelta, int secondDelta,
+        byte flags)
+    {
+        const ushort playerModuleTag = (ushort)ObjectType.Player;
+        var stream = SphBitStream.GetWriteBitStream();
+        stream.WriteByte(0, 1); // has_position
+        stream.WriteUInt16(0, 15); // tick
+        stream.WriteUInt16(entityId, 16);
+        stream.WriteByte(0, 2); // process_id high
+        stream.WriteUInt16((ushort)(playerModuleTag & 0xFFF), 12);
+        stream.WriteByte(9, 7); // wire = region 8 + 1 (RcvInfo)
+        stream.WriteUInt16(hitType, 16);
+        WriteMbcVarint(stream, hpDelta);
+        WriteMbcVarint(stream, secondDelta);
+        stream.WriteByte((byte)(flags & 0b111), 3);
+        return Packet.ToByteArray(stream.GetStreamData(), 1);
+    }
+
+    /// <summary>
+    /// Region 10: u6 index plus varint into g_rec_0C48, an absolute write so self HP/MP cannot
+    /// drift
+    /// </summary>
+    public static byte[] BuildPlayerSetStat(ushort entityId, byte statIndex, int value)
+    {
+        if (statIndex > 63)
+        {
+            throw new ArgumentOutOfRangeException(nameof(statIndex), "SetStat index is u6.");
+        }
+
+        const ushort playerModuleTag = (ushort)ObjectType.Player;
+        var stream = SphBitStream.GetWriteBitStream();
+        stream.WriteByte(0, 1); // has_position
+        stream.WriteUInt16(0, 15); // tick
+        stream.WriteUInt16(entityId, 16);
+        stream.WriteByte(0, 2); // process_id high
+        stream.WriteUInt16((ushort)(playerModuleTag & 0xFFF), 12);
+        stream.WriteByte(11, 7); // wire = region 10 + 1 (SetStat)
+        stream.WriteByte((byte)(statIndex & 0x3F), 6);
+        WriteMbcVarint(stream, value);
+        return Packet.ToByteArray(stream.GetStreamData(), 1);
+    }
+
+    /// <summary>
+    /// Region 11 array count 0. CheckPing resets its loss counter on any PositionStream
+    /// </summary>
+    public static byte[] BuildPlayerEmptyPositionStream (ushort entityId, double x, double y, double z)
+    {
+        var ox = (int) Math.Truncate (x);
+        var oy = (int) Math.Truncate (y);
+        var oz = (int) Math.Truncate (z);
+        const ushort playerModuleTag = (ushort) ObjectType.Player;
+        var stream = SphBitStream.GetWriteBitStream ();
+        stream.WriteByte (1, 1); // has_position
+        stream.WriteUInt16 ((ushort) (ox + 32768), 16);
+        stream.WriteUInt16 ((ushort) (oy + 1200), 13);
+        stream.WriteUInt16 ((ushort) (oz + 32768), 16);
+        stream.WriteUInt16 (0, 15); // tick
+        stream.WriteUInt16 (entityId, 16);
+        stream.WriteByte (0, 2); // process_id high
+        stream.WriteUInt16 ((ushort) (playerModuleTag & 0xFFF), 12);
+        stream.WriteByte (12, 7); // wire = region 11 + 1 (PositionStream)
+        stream.WriteByte (0, 4); // array4 count 0
+        return Packet.ToByteArray (stream.GetStreamData (), 1);
+    }
+
+    /// <summary>
+    /// TradeMan region 9 cmd 15: len3 is u8 index + u16, len5 is u8 index + u32, one g_rec_0C44
+    /// field
+    /// </summary>
+    public static byte[] BuildPlayerWriteIndexedStat(ushort entityId, byte statIndex, int value)
+    {
+        var useU32 = value is < short.MinValue or > ushort.MaxValue;
+        byte[] payload;
+        if (useU32)
+        {
+            var u = unchecked((uint)value);
+            payload =
+            [
+                statIndex,
+                (byte)(u & 0xFF),
+                (byte)((u >> 8) & 0xFF),
+                (byte)((u >> 16) & 0xFF),
+                (byte)((u >> 24) & 0xFF)
+            ];
+        }
+        else
+        {
+            var u = unchecked((ushort)value);
+            payload = [statIndex, (byte)(u & 0xFF), (byte)((u >> 8) & 0xFF)];
+        }
+
+        return BuildPlayerTradeManCommand(entityId, command: 15, payload);
+    }
+
+    /// <summary>
+    /// Nameplate via WriteIndexedStat, because a FULL_SPAWN re-show is ignored once spawned; i21 is
+    /// 0 for no guild, else guild+64 (65-90)
+    /// </summary>
+    public static void AppendPlayerNameplateStatPackets(List<byte[]> dest, ushort entityId,
+        ushort currentHp, ushort maxHp, int karmaType, int titleLevel, int degreeLevel,
+        int titleRebirth, int degreeRebirth, int guild, int guildRank)
+    {
+        dest.Add(BuildPlayerWriteIndexedStat(entityId, (byte)Stat.HpCurrent, currentHp));
+        dest.Add(BuildPlayerWriteIndexedStat(entityId, (byte)Stat.HpMax, maxHp));
+        dest.Add(BuildPlayerWriteIndexedStat(entityId, (byte)Stat.KarmaType, karmaType));
+        dest.Add(BuildPlayerWriteIndexedStat(entityId, (byte)Stat.TitleLevel, titleLevel));
+        dest.Add(BuildPlayerWriteIndexedStat(entityId, (byte)Stat.DegreeLevel, degreeLevel));
+        dest.Add(BuildPlayerWriteIndexedStat(entityId, (byte)Stat.TitleRebirth, titleRebirth));
+        dest.Add(BuildPlayerWriteIndexedStat(entityId, (byte)Stat.DegreeRebirth, degreeRebirth));
+        // 0 for no guild, otherwise guild+64 (65-90)
+        var guildWire = guild == 0 ? 0 : guild + 64;
+        dest.Add(BuildPlayerWriteIndexedStat(entityId, (byte)Stat.GuildPlus64, guildWire));
+        dest.Add(BuildPlayerWriteIndexedStat(entityId, (byte)Stat.GuildRank, guild == 0 ? 0 : guildRank));
+    }
+
+    /// <summary>
+    /// _player region 9: u4 command plus an array4 of u8 payload
+    /// </summary>
+    public static byte[] BuildPlayerTradeManCommand(ushort entityId, byte command, ReadOnlySpan<byte> payload)
+    {
+        if (command > 15)
+        {
+            throw new ArgumentOutOfRangeException(nameof(command), "TradeMan command is u4.");
+        }
+
+        if (payload.Length > 15)
+        {
+            throw new ArgumentException("TradeMan array4 payload max length is 15.", nameof(payload));
+        }
+
+        const ushort playerModuleTag = (ushort)ObjectType.Player;
+        var stream = SphBitStream.GetWriteBitStream();
+        stream.WriteByte(0, 1); // has_position
+        stream.WriteUInt16(0, 15); // tick
+        stream.WriteUInt16(entityId, 16);
+        stream.WriteByte(0, 2); // process_id high
+        stream.WriteUInt16((ushort)(playerModuleTag & 0xFFF), 12);
+        stream.WriteByte(10, 7); // wire = region 9 + 1 (TradeMan)
+        stream.WriteByte(command, 4);
+        stream.WriteByte((byte)payload.Length, 4);
+        stream.WriteBytes(payload.ToArray(), payload.Length, true);
+
+        return Packet.ToByteArray(stream.GetStreamData(), 1);
+    }
+
+    /// <summary>
+    /// Classic Manager frame: clan rank and name for that entity id
+    /// </summary>
+    public static byte[] BuildClanRankPacket(ushort entityId, string clanName, int targetRank)
+    {
+        var responseStream = SphBitStream.GetWriteBitStream();
+        var nameBytes = SphEncoding.Win1251.GetBytes(clanName);
+        responseStream.WriteBytes([
+            (byte)(24 + nameBytes.Length), 0x00, 0x2C, 0x01, 0x00, 0x00, 0x00
+        ]);
+        responseStream.WriteUInt16(SphBitStream.ByteSwap(entityId));
+        responseStream.WriteBytes([0x08, 0x40, 0xE3, 0xA2, 0xA0]);
+        responseStream.WriteByte((byte)(targetRank << 5));
+
+        responseStream.WriteByte(0x0, 5);
+        responseStream.WriteUInt16(SphBitStream.ByteSwap(entityId));
+        responseStream.WriteByte(0x0, 7);
+        responseStream.WriteBytes([0x1A, 0x16]);
+        responseStream.WriteByte((byte)(nameBytes.Length + 2));
+        responseStream.WriteByte((byte)targetRank);
+        responseStream.WriteBytes(nameBytes, nameBytes.Length, true);
+        responseStream.WriteByte(0x0, 4);
+        responseStream.WriteByte(0x0);
+        return responseStream.GetStreamData();
+    }
+
+    private static void WriteCredentialsManagerRegion(SphWriteStream stream, byte command,
+        ReadOnlySpan<byte> payload)
+    {
+        stream.WriteByte(13, 7); // wire = region 12 + 1 (Manager)
+        stream.WriteByte(command, 8);
+        stream.WriteByte((byte)payload.Length, 8);
+        stream.WriteBytes(payload.ToArray(), payload.Length, true);
+    }
+
+    private static void WriteArray4U7String(SphWriteStream stream, string value)
+    {
+        var bytes = string.IsNullOrEmpty(value)
+            ? []
+            : SphEncoding.Win1251.GetBytes(value);
+        if (bytes.Length > 15)
+        {
+            bytes = bytes.AsSpan(0, 15).ToArray();
+        }
+
+        stream.WriteByte((byte)bytes.Length, 4);
+        foreach (var b in bytes)
+        {
+            stream.WriteByte((byte)(b & 0x7F), 7);
+        }
+    }
+
+    /// <summary>
+    /// Region 1: trunc+bias origins, encodeCoordinate deltas, raw u8 angle; moduleTag is ObjectType
+    /// (player 2, door1 60, monster 210, monsterf 211)
+    /// </summary>
+    public static byte[] BuildMoveObjectPacket(double x0, double y0, double z0, double t0, ushort entityId,
+        ushort moduleTag)
+    {
+        var ox = (int)Math.Truncate(x0);
+        var oy = (int)Math.Truncate(y0);
+        var oz = (int)Math.Truncate(z0);
+
+        var stream = SphBitStream.GetWriteBitStream();
+        stream.WriteByte(1, 1); // has_position
+        stream.WriteUInt16((ushort)(ox + 32768), 16);
+        stream.WriteUInt16((ushort)(oy + 1200), 13);
+        stream.WriteUInt16((ushort)(oz + 32768), 16);
+        stream.WriteUInt16(0, 15); // tick
+        stream.WriteUInt16(entityId, 16);
+        stream.WriteByte(0, 2); // process_id high (local ids fit in 16)
+        stream.WriteUInt16((ushort)(moduleTag & 0xFFF), 12);
+        stream.WriteByte(2, 7); // wire = region + 1 → TransformUpdate
+        stream.WriteUInt16(MbcCoordEncoding.EncodeCoordinate(ox, (float)x0), 12);
+        stream.WriteUInt16(MbcCoordEncoding.EncodeCoordinate(oy, (float)y0), 12);
+        stream.WriteUInt16(MbcCoordEncoding.EncodeCoordinate(oz, (float)z0), 12);
+        stream.WriteByte(MbcCoordEncoding.EncodeAngle(t0), 8);
+
+        // padZeros=1 → control byte 0 before body (same as live msg300 S2C)
+        return Packet.ToByteArray(stream.GetStreamData(), 1);
+    }
+
+    /// <summary>
+    /// Monster region 20 RegionManager command 3: the u32 payload goes to _char.Anim, an index into
+    /// the params cfg animations (live mobs swing with 29 SHOOT1 and 30 SHOOT2)
+    /// </summary>
+    public static byte[] BuildMonsterPlayAnimationPacket (ushort entityId, ushort moduleTag, uint animation)
+    {
+        var stream = SphBitStream.GetWriteBitStream ();
+        stream.WriteByte (0, 1); // has_position
+        stream.WriteUInt16 (0, 15); // tick
+        stream.WriteUInt16 (entityId, 16);
+        stream.WriteByte (0, 2); // process_id high
+        stream.WriteUInt16 ((ushort) (moduleTag & 0xFFF), 12);
+        stream.WriteByte (21, 7); // wire = region 20 + 1 (RegionManager)
+        stream.WriteUInt32 (3, 32); // command 3: Anim
+        stream.WriteByte (4, 8); // payload_len_bytes
+        stream.WriteUInt32 (animation, 32);
+        return Packet.ToByteArray (stream.GetStreamData (), 1);
+    }
+
+    public static byte[] LoadNewPlayerDungeon =>
+    [
+        0xBF, 0x00, 0x2C, 0x01, 0x00, 0x06, 0x7A, 0x2C, 0x0C, 0x10, 0x80, 0x2F, 0x81, 0x1F, 0x01, 0x0B, 0xE2, 0xE0,
+        0x03, 0x20, 0xA1, 0x4B, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x50, 0x64, 0x91, 0x01, 0xA0,
+        0x00, 0x03, 0x9A, 0xFE, 0x00, 0x85, 0x09, 0x00, 0xF8, 0xF9, 0xAF, 0x00, 0x06, 0x3E, 0x00, 0xC0, 0x44, 0x62,
+        0x00, 0x50, 0xC6, 0x22, 0x00, 0xC0, 0x76, 0x22, 0x00, 0x44, 0x16, 0x19, 0x00, 0x0A, 0x2F, 0x80, 0x9D, 0xF5,
+        0x0B, 0x60, 0xE1, 0x33, 0x7C, 0xA2, 0x83, 0x8D, 0xC4, 0x36, 0xA8, 0x8C, 0x45, 0xF0, 0xFB, 0xF1, 0x44, 0xC1,
+        0x88, 0x2C, 0x32, 0x00, 0x14, 0x5E, 0x40, 0x20, 0xA0, 0xF0, 0x0C, 0xA2, 0x83, 0x8D, 0xC4, 0x36, 0xA8, 0x8C,
+        0x45, 0xF0, 0xFB, 0xF1, 0x44, 0x85, 0x6F, 0xD0, 0xED, 0x2C, 0xFE, 0x55, 0x8F, 0x48, 0x06, 0x56, 0x8F, 0x48,
+        0x06, 0x06, 0xF8, 0x21, 0x2C, 0x40, 0x0D, 0x3E, 0x9F, 0x10, 0x45, 0x62, 0x97, 0x56, 0xC6, 0x22, 0x41, 0xA4,
+        0x76, 0xA2, 0xE5, 0x50, 0x14, 0x00, 0x14, 0x43, 0x3A, 0x29, 0xDE, 0x07, 0x85, 0x17, 0x00, 0x00, 0xF8, 0x25,
+        0x2C, 0xA0, 0x1F, 0x3E, 0x19, 0xA1, 0x46, 0x62, 0xB0, 0x53, 0xC6, 0x22, 0x49, 0xC2, 0x76, 0x22, 0x80, 0x44,
+        0x16, 0x19, 0x89, 0x0A, 0x59, 0x00, 0xF0, 0xFF, 0xFF, 0xFF, 0x0F, 0xC1, 0x00, 0x2C, 0x01, 0x00, 0x06, 0x7A,
+        0x15, 0x0B, 0x24, 0x83, 0xCF, 0x38, 0xA3, 0x91, 0xB8, 0x94, 0x95, 0xB1, 0xC8, 0x13, 0x31, 0x9E, 0x68, 0x0C,
+        0x14, 0x05, 0x00, 0xC5, 0x50, 0xEA, 0x80, 0x00, 0xC0, 0xCF, 0x62, 0x81, 0x3F, 0xF0, 0x01, 0xCD, 0x25, 0x12,
+        0xAB, 0xA2, 0x32, 0x16, 0x09, 0x95, 0xCB, 0x13, 0x01, 0x24, 0xB2, 0xC8, 0x00, 0x50, 0xC8, 0x02, 0x80, 0xFF,
+        0xFF, 0xFF, 0xFF, 0xC2, 0x13, 0x2C, 0x1C, 0x00, 0x04, 0xFC, 0x0C, 0x58, 0x00, 0x16, 0x1F, 0x00, 0x09, 0x5D,
+        0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0x22, 0x8B, 0x0C, 0x00, 0x05, 0x18, 0xD0, 0xF4,
+        0x07, 0x28, 0x64, 0x01, 0xC0, 0xFF, 0xFF, 0xFF, 0xFF, 0xEF, 0x7F, 0x85, 0xCF, 0xF0, 0x01, 0x00, 0x26, 0x12,
+        0x03, 0x80, 0x32, 0x16, 0x01, 0x00, 0xB6, 0x13, 0x01, 0x20, 0xB2, 0xC8, 0x00, 0x50, 0x78, 0x81, 0x00, 0x81,
+        0xC2, 0x33, 0x64, 0x6D, 0xCF, 0x15, 0xEB, 0x82, 0x26, 0x12, 0x25, 0x7C, 0xD0, 0x15, 0x17, 0xBE, 0x01, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xA0, 0xF0, 0x0C, 0x19, 0xD9, 0x76, 0xC5,
+        0xDB, 0xB4, 0x89, 0x44, 0x0D, 0x7E, 0x72, 0xC5, 0x85, 0x6F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xC8, 0x00, 0x2C, 0x01, 0x00, 0x06, 0x7A, 0xFF, 0x2B, 0x7C, 0x46, 0xE1,
+        0x19, 0x08, 0xC0, 0xE6, 0x8A, 0xF5, 0x41, 0x13, 0x89, 0xFE, 0x18, 0xE2, 0x8A, 0x0B, 0xDF, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF0, 0x03, 0x60, 0xE1, 0x33, 0x7C, 0x00, 0x80,
+        0x89, 0xC4, 0x00, 0xA0, 0x8C, 0x45, 0x00, 0x80, 0xED, 0x44, 0x00, 0x88, 0x2C, 0x32, 0x00, 0x14, 0x5E, 0x40,
+        0x40, 0xA0, 0xF0, 0x0C, 0x73, 0x7F, 0x75, 0xC5, 0x14, 0xA1, 0x89, 0x44, 0x20, 0x82, 0x71, 0xC5, 0x85, 0x6F,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF8, 0xE5, 0x3E, 0xF0, 0x19,
+        0x3E, 0x00, 0xC0, 0x44, 0x62, 0x00, 0x50, 0xC6, 0x22, 0x00, 0xC0, 0x76, 0x22, 0x00, 0x44, 0x16, 0x19, 0x00,
+        0x0A, 0x2F, 0x30, 0x20, 0x50, 0x78, 0x06, 0x99, 0x06, 0xBA, 0xE2, 0x83, 0xDA, 0x44, 0xA2, 0x2B, 0xC1, 0xB9,
+        0xE2, 0xC2, 0x37, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFC, 0x74,
+        0x1F, 0xF8, 0x01, 0x9F, 0xB9, 0x5C, 0x22, 0x31, 0xDE, 0x2A, 0x63, 0x11, 0xFB, 0xDE, 0x3C, 0x11, 0x00, 0x22,
+        0x8B, 0x0C, 0x00, 0x3F, 0x06, 0x16, 0x90, 0xC0, 0x27, 0xC3, 0x96, 0x48, 0x9C, 0xBF, 0xC9, 0x58, 0xE4, 0xDB,
+        0xD7, 0x4E, 0x04, 0x80, 0xC8, 0x22, 0x03, 0x00, 0xC9, 0x00, 0x2C, 0x01, 0x00, 0x06, 0x7A, 0x0C, 0x2C, 0x20,
+        0x41, 0xE1, 0x05, 0x02, 0x00, 0x7E, 0x02, 0x2C, 0x20, 0x81, 0xCF, 0x1B, 0x9A, 0x91, 0xD8, 0xF2, 0x92, 0xB1,
+        0x08, 0x0E, 0xB0, 0x9D, 0x08, 0x00, 0x91, 0x45, 0x06, 0x80, 0xC2, 0x0B, 0x08, 0x00, 0xFC, 0x06, 0x58, 0x40,
+        0x02, 0x9F, 0x58, 0xC7, 0x23, 0x31, 0xAE, 0x28, 0x63, 0x91, 0x1E, 0x86, 0x3B, 0x11, 0x00, 0x22, 0x8B, 0x0C,
+        0x00, 0x85, 0x17, 0x18, 0x00, 0xF8, 0x09, 0x3F, 0x80, 0x04, 0x3E, 0x1F, 0xD3, 0x46, 0x62, 0x15, 0x4F, 0xC6,
+        0x22, 0xEE, 0xA8, 0x78, 0x22, 0x00, 0x44, 0x16, 0x19, 0x00, 0x0A, 0x2F, 0x40, 0x00, 0xF0, 0x2B, 0x53, 0x00,
+        0x09, 0x7C, 0xE8, 0xAF, 0x8B, 0xC4, 0x46, 0x96, 0x8C, 0x45, 0xD2, 0x42, 0xF1, 0x44, 0x00, 0x88, 0x2C, 0x32,
+        0x00, 0x14, 0x5E, 0xA0, 0x00, 0xE0, 0xA7, 0xBF, 0x02, 0x12, 0xF8, 0x38, 0xE5, 0x12, 0x89, 0x99, 0x41, 0x19,
+        0x8B, 0x74, 0x4F, 0xE6, 0x89, 0x00, 0x10, 0x59, 0x64, 0x00, 0x28, 0xBC, 0xC0, 0x01, 0xC0, 0x6F, 0x7F, 0x05,
+        0x24, 0xF0, 0x79, 0xE9, 0x25, 0x12, 0xB3, 0x61, 0x32, 0x16, 0x41, 0x82, 0xC6, 0x13, 0x01, 0x20, 0xB2, 0xC8,
+        0x00, 0x50, 0x78, 0x01, 0x03, 0x80, 0x9F, 0xDE, 0x02, 0xAE, 0xE1, 0x03, 0x20, 0xA1, 0x4B, 0x02, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x50, 0x64, 0x91, 0x01, 0x00, 0x1B, 0x00, 0x2C, 0x01, 0x00, 0x06, 0x7A,
+        0x7A, 0x0B, 0xB8, 0x46, 0x01, 0x06, 0x34, 0xFD, 0x01, 0x0A, 0x13, 0x10, 0x50, 0xC8, 0x02, 0x80, 0xFF, 0xFF,
+        0xFF, 0x7F, 0x2D, 0x00, 0x2C, 0x01, 0x00, 0x6D, 0xF7, 0x8A, 0x2C, 0xDB, 0xE1, 0x40, 0x0F, 0x61, 0x01, 0x6A,
+        0x10, 0x98, 0xF9, 0xF4, 0x35, 0xFE, 0xF2, 0x2F, 0x61, 0x01, 0xFD, 0x10, 0x00, 0x6D, 0xFE, 0xD7, 0x1F, 0xC0,
+        0xCF, 0x62, 0x81, 0x3F, 0x10, 0x54, 0x7E, 0xFE, 0xD9, 0x09, 0x00
+    ];
+
+    public static byte[][] NewCharacterWorldData(ushort ID)
+    {
+        return
+        [
+            [
+                0xA8, 0x00, 0x2c, 0x01, 0x00, 0x00, 0x04, MajorByte(ID), MinorByte(ID), 0x08, 0x40, 0x61, 0x02, 0x00,
+                // Carried items are declared by their own slot reserve
+                0x0A, 0x82, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x50, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0xA0, 0x25, 0x26, 0x80, 0x10, 0x7D, 0x38, 0x03, 0x00, 0x14, 0x24, 0x60, 0xA7, 0x20, 0x08, 0x14, 0x20,
+                0xCE, 0x00, 0x64, 0x00, 0x00, 0x00, 0x0D, 0x1C, 0x02, 0x05, 0x00, 0x00, 0x80, 0xC6, 0x46, 0x40, 0x40,
+                0x63, 0x83, 0xAC, 0xCC, 0xCC, 0xAC, 0x6C, 0x8C, 0x6E, 0x8E, 0x8B, 0x0B, 0xC0, 0xA9, 0xEC, 0x0E, 0x64,
+                0x0C, 0x2D, 0x4C, 0x0E, 0x24, 0xCD, 0x0D, 0xE4, 0x2C, 0xAC, 0xAD, 0x4C, 0x07, 0x64, 0xC9, 0xAD, 0x8C,
+                0x0D, 0x2E, 0x6C, 0x2C, 0x0C, 0x04, 0x65, 0xC9, 0xAD, 0x8C, 0x0D, 0x2E, 0x6C, 0x2C, 0x0C, 0x04, 0x25,
+                0xA6, 0x46, 0xC5, 0x65, 0xAE, 0xCC, 0x0C, 0xE0, 0x2B, 0x26, 0x25, 0xC5, 0x45, 0x01, 0xC0, 0x89, 0x08,
+                0x64, 0x0C, 0x2D, 0x4C, 0xEE, 0x8B, 0xAC, 0x8C, 0xED, 0xCB, 0x8C, 0x2D, 0xEC, 0x0C, 0x84, 0xC7, 0x07,
+                0x24, 0x06, 0x84, 0x29, 0xA9, 0x29, 0x89, 0x0A, 0x24, 0x06, 0x00, 0x84, 0x29, 0xA9, 0x29, 0x89, 0x0A,
+                0x04
+                // this is actually a query to check file consistency on client and not required
+                // removing it simplifies things, too, as we're not checking the response
+                // 0x72, 0x00, 0x2c, 0x01, 0x00, 0x00, 0x04, MajorByte(ID), MinorByte(ID), 0x08,
+                // 0x40, 0x63, 0x83,
+                // 0x8C, 0x2D, 0xCC, 0x8D, 0x6C, 0x6E, 0x2C, 0x0C, 0xAE, 0x8C, 0x8B, 0x0B, 0xE0,
+                // 0x0E, 0x64, 0x0C, 0x2D,
+                // 0x4C, 0x0E, 0x24, 0xCD, 0x0D, 0xE4, 0x2C, 0xAC, 0xAD, 0x4C, 0x07, 0x04, 0x78,
+                // 0x9D, 0xFF, 0x1D, 0x5C,
+                // 0x1D, 0x1C, 0x04, 0x05, 0x78, 0x9D, 0xFF, 0x1D, 0x5C, 0x1D, 0x1C, 0x04, 0x25,
+                // 0xA6, 0x06, 0x86, 0x46,
+                // 0xC5, 0x05, 0x0F, 0x0F, 0x6F, 0x47, 0xC5, 0x85, 0x0E, 0x8F, 0x0E, 0x20, 0xC8,
+                // 0x89, 0x08, 0x64, 0x0C,
+                // 0x2D, 0x4C, 0xEE, 0x8B, 0xAC, 0x8C, 0xED, 0xCB, 0x8C, 0x2D, 0xEC, 0x0C, 0x84,
+                // 0xC7, 0x07, 0x24, 0x06,
+                // 0x84, 0x29, 0xA9, 0x29, 0x89, 0x0A, 0x24, 0x06, 0x00, 0x84, 0x29, 0xA9, 0x29,
+                // 0x89, 0x0A, 0x04, 0x72,
+                // 0x00, 0x2c, 0x01, 0x00, 0x00, 0x04, MajorByte(ID), MinorByte(ID), 0x08, 0x40,
+                // 0x63, 0x83, 0x8C, 0x2D,
+                // 0xCC, 0x8D, 0x6C, 0x6E, 0x2C, 0x0C, 0xAE, 0xEC, 0x0B, 0x4D, 0x8E, 0x8B, 0x0B,
+                // 0x00, 0x2D, 0x4C, 0x0E,
+                // 0x24, 0xCD, 0x0D, 0xE4, 0x2C, 0xAC, 0xAD, 0x4C, 0x07, 0x04, 0x78, 0x9D, 0xFF,
+                // 0x1D, 0x5C, 0x1D, 0x1C,
+                // 0x04, 0x05, 0x78, 0x9D, 0xFF, 0x1D, 0x5C, 0x1D, 0x1C, 0x04, 0x25, 0xA6, 0x06,
+                // 0x86, 0x46, 0xC5, 0x05,
+                // 0x0F, 0x0F, 0x0F, 0x40, 0xC5, 0x85, 0x0E, 0x8F, 0x0E, 0x20, 0xC8, 0x89, 0x08,
+                // 0x64, 0x0C, 0x2D, 0x4C,
+                // 0xEE, 0x8B, 0xAC, 0x8C, 0xED, 0xCB, 0x8C, 0x2D, 0xEC, 0x0C, 0x84, 0xC7, 0x07,
+                // 0x24, 0x06, 0x84, 0x29,
+                // 0xA9, 0x29, 0x89, 0x0A, 0x24, 0x06, 0x00, 0x84, 0x29, 0xA9, 0x29, 0x89, 0x0A,
+                // 0x04, 0x72, 0x00, 0x2c,
+                // 0x01, 0x00, 0x00, 0x04, MajorByte(ID), MinorByte(ID), 0x08, 0x40, 0x63, 0x83,
+                // 0x8C, 0x2D, 0xCC, 0x8D,
+                // 0x6C, 0x6E, 0x2C, 0x0C, 0xAE, 0xEC, 0x0B, 0x0E, 0x8D, 0x8B, 0x0B, 0x00, 0x2D,
+                // 0x4C, 0x0E, 0x24, 0xCD,
+                // 0x0D, 0xE4, 0x2C, 0xAC, 0xAD, 0x4C, 0x07, 0x04, 0x78, 0x9D, 0xFF, 0x1D, 0x5C,
+                // 0x1D, 0x1C, 0x04, 0x05,
+                // 0x78, 0x9D, 0xFF, 0x1D, 0x5C, 0x1D, 0x1C, 0x04, 0x25, 0xA6, 0x06, 0x86, 0x46,
+                // 0xC5, 0x05, 0x0F, 0x0F,
+                // 0x0F, 0x40, 0xC5, 0x85, 0x0E, 0x8F, 0x0E, 0x20, 0xC8, 0x89, 0x08, 0x64, 0x0C,
+                // 0x2D, 0x4C, 0xEE, 0x8B,
+                // 0xAC, 0x8C, 0xED, 0xCB, 0x8C, 0x2D, 0xEC, 0x0C, 0x84, 0xC7, 0x07, 0x24, 0x06,
+                // 0x84, 0x29, 0xA9, 0x29,
+                // 0x89, 0x0A, 0x24, 0x06, 0x00, 0x84, 0x29, 0xA9, 0x29, 0x89, 0x0A, 0x04, 0x72,
+                // 0x00, 0x2c, 0x01, 0x00,
+                // 0x00, 0x04, MajorByte(ID), MinorByte(ID), 0x08, 0x40, 0x63, 0x83, 0x8C, 0x2D,
+                // 0xCC, 0x8D, 0x6C, 0x6E,
+                // 0x2C, 0x0C, 0xAE, 0xEC, 0x4B, 0x8E, 0x8C, 0x8B, 0x0B, 0x00, 0x2D, 0x4C, 0x0E,
+                // 0x24, 0xCD, 0x0D, 0xE4,
+                // 0x2C, 0xAC, 0xAD, 0x4C, 0x07, 0x04, 0x78, 0x9D, 0xFF, 0x1D, 0x5C, 0x1D, 0x1C,
+                // 0x04, 0x05, 0x78, 0x9D,
+                // 0xFF, 0x1D, 0x5C, 0x1D, 0x1C, 0x04, 0x25, 0xA6, 0x06, 0x86, 0x46, 0xC5, 0x05,
+                // 0x0F, 0x0F, 0x0F, 0x40,
+                // 0xC5, 0x85, 0x0E, 0x8F, 0x0E, 0x20, 0xC8, 0x89, 0x08, 0x64, 0x0C, 0x2D, 0x4C,
+                // 0xEE, 0x8B, 0xAC, 0x8C,
+                // 0xED, 0xCB, 0x8C, 0x2D, 0xEC, 0x0C, 0x84, 0xC7, 0x07, 0x24, 0x06, 0x84, 0x29,
+                // 0xA9, 0x29, 0x89, 0x0A,
+                // 0x24, 0x06, 0x00, 0x84, 0x29, 0xA9, 0x29, 0x89, 0x0A, 0x04, 0x72, 0x00, 0x2c,
+                // 0x01, 0x00, 0x00, 0x04,
+                // MajorByte(ID), MinorByte(ID), 0x08, 0x40, 0x63, 0x83, 0xAC, 0x4D, 0x6C, 0x8C,
+                // 0x8B, 0x0B, 0x20, 0x0C,
+                // 0xAE, 0xEC, 0x4B, 0x8E, 0x8C, 0x8B, 0x0B, 0x00, 0x2D, 0x4C, 0x0E, 0x24, 0xCD,
+                // 0x0D, 0xE4, 0x2C, 0xAC,
+                // 0xAD, 0x4C, 0x07, 0x04, 0x78, 0x9D, 0xFF, 0x1D, 0x5C, 0x1D, 0x1C, 0x04, 0x05,
+                // 0x78, 0x9D, 0xFF, 0x1D,
+                // 0x5C, 0x1D, 0x1C, 0x04, 0x25, 0xA6, 0x06, 0x86, 0x46, 0xC5, 0xA5, 0x4D, 0x6C,
+                // 0x0C, 0x40, 0xC5, 0x85,
+                // 0x0E, 0x8F, 0x0E, 0x20, 0xC8, 0x89, 0x08, 0x64, 0x0C, 0x2D, 0x4C, 0xEE, 0x8B,
+                // 0xAC, 0x8C, 0xED, 0xCB,
+                // 0x8C, 0x2D, 0xEC, 0x0C, 0x84, 0xC7, 0x07, 0x24, 0x06, 0x84, 0x29, 0xA9, 0x29,
+                // 0x89, 0x0A, 0x24, 0x06,
+                // 0x00, 0x84, 0x29, 0xA9, 0x29, 0x89, 0x0A, 0x04, 0x72, 0x00, 0x2c, 0x01, 0x00,
+                // 0x00, 0x04, MajorByte(ID),
+                // MinorByte(ID), 0x08, 0x40, 0x63, 0x83, 0xAC, 0xED, 0x8D, 0xAC, 0x8C, 0x6D, 0x8E,
+                // 0x8B, 0x0B, 0xE0, 0x4B,
+                // 0x8E, 0x8C, 0x8B, 0x0B, 0x00, 0x2D, 0x4C, 0x0E, 0x24, 0xCD, 0x0D, 0xE4, 0x2C,
+                // 0xAC, 0xAD, 0x4C, 0x07,
+                // 0x04, 0x78, 0x9D, 0xFF, 0x1D, 0x5C, 0x1D, 0x1C, 0x04, 0x05, 0x78, 0x9D, 0xFF,
+                // 0x1D, 0x5C, 0x1D, 0x1C,
+                // 0x04, 0x25, 0xA6, 0x06, 0x86, 0x46, 0xC5, 0xA5, 0x8D, 0x8C, 0x6D, 0x47, 0xC5,
+                // 0xA5, 0x8D, 0x4E, 0x6E,
+                // 0x47, 0xC5, 0x85, 0x0E, 0x8F, 0x0E, 0x20, 0x4C, 0xEE, 0x8B, 0xAC, 0x8C, 0xED,
+                // 0xCB, 0x8C, 0x2D, 0xEC,
+                // 0x0C, 0x84, 0xC7, 0x07, 0x24, 0x06, 0x84, 0x29, 0xA9, 0x29, 0x89, 0x0A, 0x24,
+                // 0x06, 0x00, 0x84, 0x29,
+                // 0xA9, 0x29, 0x89, 0x0A, 0x04, 0x72, 0x00, 0x2c, 0x01, 0x00, 0x00, 0x04,
+                // MajorByte(ID), MinorByte(ID),
+                // 0x08, 0x40, 0x63, 0x83, 0xAC, 0xED, 0x8D, 0xAC, 0x8C, 0x6D, 0xEE, 0x0B, 0x4D,
+                // 0x8E, 0x8B, 0x0B, 0x80,
+                // 0x8B, 0x0B, 0x00, 0x2D, 0x4C, 0x0E, 0x24, 0xCD, 0x0D, 0xE4, 0x2C, 0xAC, 0xAD,
+                // 0x4C, 0x07, 0x04, 0x78,
+                // 0x9D, 0xFF, 0x1D, 0x5C, 0x1D, 0x1C, 0x04, 0x05, 0x78, 0x9D, 0xFF, 0x1D, 0x5C,
+                // 0x1D, 0x1C, 0x04, 0x25,
+                // 0xA6, 0x06, 0x86, 0x46, 0xC5, 0xA5, 0x8D, 0x8C, 0x6D, 0x47, 0xC5, 0xA5, 0x8D,
+                // 0x4E, 0x0E, 0x40, 0xC5,
+                // 0x85, 0x0E, 0x8F, 0x0E, 0x20, 0x4C, 0xEE, 0x8B, 0xAC, 0x8C, 0xED, 0xCB, 0x8C,
+                // 0x2D, 0xEC, 0x0C, 0x84,
+                // 0xC7, 0x07, 0x24, 0x06, 0x84, 0x29, 0xA9, 0x29, 0x89, 0x0A, 0x24, 0x06, 0x00,
+                // 0x84, 0x29, 0xA9, 0x29,
+                // 0x89, 0x0A, 0x04, 0x72, 0x00, 0x2c, 0x01, 0x00, 0x00, 0x04, MajorByte(ID),
+                // MinorByte(ID), 0x08, 0x40,
+                // 0x63, 0x83, 0xAC, 0xED, 0x8D, 0xAC, 0x8C, 0x6D, 0xEE, 0x0B, 0x0E, 0x8D, 0x8B,
+                // 0x0B, 0x80, 0x8B, 0x0B,
+                // 0x00, 0x2D, 0x4C, 0x0E, 0x24, 0xCD, 0x0D, 0xE4, 0x2C, 0xAC, 0xAD, 0x4C, 0x07,
+                // 0x04, 0x78, 0x9D, 0xFF,
+                // 0x1D, 0x5C, 0x1D, 0x1C, 0x04, 0x05, 0x78, 0x9D, 0xFF, 0x1D, 0x5C, 0x1D, 0x1C,
+                // 0x04, 0x25, 0xA6, 0x06,
+                // 0x86, 0x46, 0xC5, 0xA5, 0x8D, 0x8C, 0x6D, 0x47, 0xC5, 0xA5, 0x8D, 0x4E, 0x0E,
+                // 0x40, 0xC5, 0x85, 0x0E,
+                // 0x8F, 0x0E, 0x20, 0x4C, 0xEE, 0x8B, 0xAC, 0x8C, 0xED, 0xCB, 0x8C, 0x2D, 0xEC,
+                // 0x0C, 0x84, 0xC7, 0x07,
+                // 0x24, 0x06, 0x84, 0x29, 0xA9, 0x29, 0x89, 0x0A, 0x24, 0x06, 0x00, 0x84, 0x29,
+                // 0xA9, 0x29, 0x89, 0x0A,
+                // 0x04, 0x72, 0x00, 0x2c, 0x01, 0x00, 0x00, 0x04, MajorByte(ID), MinorByte(ID),
+                // 0x08, 0x40, 0x63, 0x83,
+                // 0xAC, 0xED, 0x8D, 0xAC, 0x8C, 0x6D, 0xEE, 0x4B, 0x8E, 0x8C, 0x8B, 0x0B, 0x80,
+                // 0x8B, 0x0B, 0x00, 0x2D,
+                // 0x4C, 0x0E, 0x24, 0xCD, 0x0D, 0xE4, 0x2C, 0xAC, 0xAD, 0x4C, 0x07, 0x04, 0x78,
+                // 0x9D, 0xFF, 0x1D, 0x5C,
+                // 0x1D, 0x1C, 0x04, 0x05, 0x78, 0x9D, 0xFF, 0x1D, 0x5C, 0x1D, 0x1C, 0x04, 0x25,
+                // 0xA6, 0x06, 0x86, 0x46,
+                // 0xC5, 0xA5, 0x8D, 0x8C, 0x6D, 0x47, 0xC5, 0xA5, 0x8D, 0x4E, 0x0E, 0x40, 0xC5,
+                // 0x85, 0x0E, 0x8F, 0x0E,
+                // 0x20, 0x4C, 0xEE, 0x8B, 0xAC, 0x8C, 0xED, 0xCB, 0x8C, 0x2D, 0xEC, 0x0C, 0x84,
+                // 0xC7, 0x07, 0x24, 0x06,
+                // 0x84, 0x29, 0xA9, 0x29, 0x89, 0x0A, 0x24, 0x06, 0x00, 0x84, 0x29, 0xA9, 0x29,
+                // 0x89, 0x0A, 0x04, 0x72,
+                // 0x00, 0x2c, 0x01, 0x00, 0x00, 0x04, MajorByte(ID), MinorByte(ID), 0x08, 0x40,
+                // 0x63, 0x83, 0x0C, 0x2E,
+                // 0x4C, 0x2E, 0xAC, 0x6D, 0x8E, 0x8B, 0x0B, 0x80, 0x8B, 0x0B, 0x80, 0x8B, 0x0B,
+                // 0x00, 0x2D, 0x4C, 0x0E,
+                // 0x24, 0xCD, 0x0D, 0xE4, 0x2C, 0xAC, 0xAD, 0x4C, 0x07, 0x04, 0x78, 0x9D, 0xFF,
+                // 0x1D, 0x5C, 0x1D, 0x1C,
+                // 0x04, 0x05, 0x78, 0x9D, 0xFF, 0x1D, 0x5C, 0x1D, 0x1C, 0x04, 0x25, 0xA6, 0x06,
+                // 0x86, 0x46, 0xC5, 0x65,
+                // 0xCC, 0xEC, 0x6C, 0x47, 0xC5, 0xA5, 0x4D, 0x8C, 0x0C, 0x40, 0xC5, 0x85, 0x0E,
+                // 0x8F, 0x0E, 0x20, 0x4C,
+                // 0xEE, 0x8B, 0xAC, 0x8C, 0xED, 0xCB, 0x8C, 0x2D, 0xEC, 0x0C, 0x84, 0xC7, 0x07,
+                // 0x24, 0x06, 0x84, 0x29,
+                // 0xA9, 0x29, 0x89, 0x0A, 0x24, 0x06, 0x00, 0x84, 0x29, 0xA9, 0x29, 0x89, 0x0A,
+                // 0x04, 0x72, 0x00, 0x2c,
+                // 0x01, 0x00, 0x00, 0x04, MajorByte(ID), MinorByte(ID), 0x08, 0x40, 0x63, 0x83,
+                // 0x0C, 0x2E, 0x4C, 0x2E,
+                // 0xAC, 0x6D, 0x8E, 0x8B, 0xAB, 0x2D, 0x4C, 0xAF, 0x6C, 0x8E, 0x8B, 0x0B, 0x20,
+                // 0x4C, 0x0E, 0x24, 0xCD,
+                // 0x0D, 0xE4, 0x2C, 0xAC, 0xAD, 0x4C, 0x07, 0x64, 0xC9, 0xAD, 0x8C, 0x0D, 0x2E,
+                // 0x6C, 0x2C, 0x0C, 0x04,
+                // 0x65, 0xC9, 0xAD, 0x8C, 0x0D, 0x2E, 0x6C, 0x2C, 0x0C, 0x04, 0x25, 0xA6, 0x46,
+                // 0xC5, 0xA5, 0x4D, 0x8C,
+                // 0x0C, 0x40, 0xC5, 0xA5, 0x4D, 0x8C, 0x0C, 0x40, 0xC5, 0x85, 0x0E, 0x8F, 0x0E,
+                // 0x20, 0x4C, 0xEE, 0x8B,
+                // 0xAC, 0x8C, 0xED, 0xCB, 0x8C, 0x2D, 0xEC, 0x0C, 0x84, 0xC7, 0x07, 0x24, 0x06,
+                // 0x84, 0x29, 0xA9, 0x29,
+                // 0x89, 0x0A
+            ],
+            [
+                // 0x24, 0x06, 0x00, 0x84, 0x29, 0xA9, 0x29, 0x89, 0x0A, 0x04, 0x72, 0x00, 0x2c,
+                // 0x01, 0x00, 0x00, 0x04,
+                // MajorByte(ID), MinorByte(ID), 0x08, 0x40, 0x63, 0x83, 0x0C, 0x2E, 0x4C, 0x2E,
+                // 0xAC, 0x6D, 0x8E, 0x8B,
+                // 0x4B, 0xEE, 0xED, 0xAD, 0x6D, 0x8E, 0x8B, 0x0B, 0x20, 0x4C, 0x0E, 0x24, 0xCD,
+                // 0x0D, 0xE4, 0x2C, 0xAC,
+                // 0xAD, 0x4C, 0x07, 0x04, 0x78, 0x9D, 0xFF, 0x1D, 0x5C, 0x1D, 0x1C, 0x04, 0x05,
+                // 0x78, 0x9D, 0xFF, 0x1D,
+                // 0x5C, 0x1D, 0x1C, 0x04, 0x25, 0xA6, 0x06, 0x86, 0x46, 0xC5, 0xA5, 0x4D, 0x8C,
+                // 0x0C, 0x40, 0xC5, 0xA5,
+                // 0x4D, 0x8C, 0x0C, 0x40, 0xC5, 0x85, 0x0E, 0x8F, 0x0E, 0x20, 0x4C, 0xEE, 0x8B,
+                // 0xAC, 0x8C, 0xED, 0xCB,
+                // 0x8C, 0x2D, 0xEC, 0x0C, 0x84, 0xC7, 0x07, 0x24, 0x06, 0x84, 0x29, 0xA9, 0x29,
+                // 0x89, 0x0A, 0x24, 0x06,
+                // 0x00, 0x84, 0x29, 0xA9, 0x29, 0x89, 0x0A, 0x04, 0x72, 0x00, 0x2c, 0x01, 0x00,
+                // 0x00, 0x04, MajorByte(ID),
+                // MinorByte(ID), 0x08, 0x40, 0x63, 0x83, 0x0C, 0x2E, 0x4C, 0x2E, 0xAC, 0x6D, 0x8E,
+                // 0x8B, 0x6B, 0xAE,
+                // 0xAC, 0x8C, 0x6C, 0x8E, 0x8B, 0x0B, 0x20, 0x4C, 0x0E, 0x24, 0xCD, 0x0D, 0xE4,
+                // 0x2C, 0xAC, 0xAD, 0x4C,
+                // 0x07, 0x04, 0x78, 0x9D, 0xFF, 0x1D, 0x5C, 0x1D, 0x1C, 0x04, 0x05, 0x78, 0x9D,
+                // 0xFF, 0x1D, 0x5C, 0x1D,
+                // 0x1C, 0x04, 0x25, 0xA6, 0x06, 0x86, 0x46, 0xC5, 0x65, 0xCC, 0xEC, 0x0C, 0x40,
+                // 0xC5, 0xA5, 0x4D, 0x8C,
+                // 0x0C, 0x40, 0xC5, 0x85, 0x0E, 0x8F, 0x0E, 0x20, 0x4C, 0xEE, 0x8B, 0xAC, 0x8C,
+                // 0xED, 0xCB, 0x8C, 0x2D,
+                // 0xEC, 0x0C, 0x84, 0xC7, 0x07, 0x24, 0x06, 0x84, 0x29, 0xA9, 0x29, 0x89, 0x0A,
+                // 0x24, 0x06, 0x00, 0x84,
+                // 0x29, 0xA9, 0x29, 0x89, 0x0A, 0x04, 0x77, 0x00, 0x2c, 0x01, 0x00, 0x00, 0x04,
+                // MajorByte(ID),
+                // MinorByte(ID), 0x08, 0x40, 0x63, 0x83, 0x0C, 0xAF, 0x0E, 0x8E, 0x2C, 0x8C, 0xAE,
+                // 0x8C, 0x8B, 0x0B, 0xA0, 
+                // 0x8C, 0x6C, 0x8E, 0x8B, 0x0B, 0x20, 0x4C, 0x0E, 0x24, 0xCD, 0x0D, 0xE4, 0x2C,
+                // 0xAC, 0xAD, 0x4C, 0x07, 
+                // 0x04, 0x78, 0x9D, 0xFF, 0x1D, 0x5C, 0x1D, 0x1C, 0x04, 0x05, 0x78, 0x9D, 0xFF,
+                // 0x1D, 0x5C, 0x1D, 0x1C, 
+                // 0x04, 0x25, 0xA6, 0x06, 0x86, 0x66, 0x0A, 0x0E, 0xAD, 0x4C, 0xAE, 0xCC, 0xA5,
+                // 0x0C, 0xAF, 0x6C, 0x67, 
+                // 0x0A, 0x0E, 0xAD, 0x4C, 0xAE, 0x6C, 0x88, 0x2D, 0xAD, 0xCC, 0x8D, 0xCE, 0xA5,
+                // 0x0C, 0xAF, 0x0C, 0xE0, 
+                // 0x0C, 0x84, 0xC7, 0x07, 0x24, 0x06, 0x84, 0x29, 0xA9, 0x29, 0x89, 0x0A, 0x24,
+                // 0x06, 0x00, 0x84, 0x29, 
+                // 0xA9, 0x29, 0x89, 0x0A, 0xA4, 0xB1, 0x21, 0x20, 0x00, 0x00
+            ]
+        ];
+    }
+}

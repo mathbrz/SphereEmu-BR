@@ -1,0 +1,156 @@
+using System.Reflection;
+using System.Text.Json;
+
+namespace SphServer.Helpers.Networking;
+
+public sealed class MbcRecoveredCommand
+{
+    public required string Name { get; init; }
+    public string Module { get; init; } = "";
+    public string Handler { get; init; } = "";
+    public string Source { get; init; } = "";
+    public int Tag { get; init; }
+    public int Region { get; init; }
+    public int? Command { get; init; }
+    public string Schema { get; init; } = "";
+    public IReadOnlyList<MbcUnpackHint> Unpack { get; init; } = [];
+}
+
+public readonly record struct MbcUnpackHint (int Bytes, string Name);
+
+/// Names and unpack hints loaded from mbc_recovered_commands.json
+public sealed class MbcRecoveredCatalog
+{
+    private readonly Dictionary<(int Tag, int Region, int Cmd), MbcRecoveredCommand> byCommand = new ();
+    private readonly Dictionary<(int Tag, int Region), MbcRecoveredCommand> byRegion = new ();
+    private readonly Dictionary<(string Handler, int Region, int Cmd), MbcRecoveredCommand> byHandlerCommand = new ();
+
+    public static MbcRecoveredCatalog LoadEmbedded ()
+    {
+        var catalog = new MbcRecoveredCatalog ();
+        var json = ReadEmbedded ("mbc_recovered_commands.json");
+        using var doc = JsonDocument.Parse (json);
+        if (!doc.RootElement.TryGetProperty ("entries", out var entries))
+        {
+            return catalog;
+        }
+
+        foreach (var el in entries.EnumerateArray ())
+        {
+            // Schema stubs use r/c null (module present, no wire region). Skip those.
+            if (!TryReadInt (el, "t", out var tag) || !TryReadInt (el, "r", out var region))
+            {
+                continue;
+            }
+
+            int? cmd = TryReadInt (el, "c", out var cmdVal) ? cmdVal : null;
+            var unpack = new List<MbcUnpackHint> ();
+            if (el.TryGetProperty ("u", out var unpackEl) && unpackEl.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var hint in unpackEl.EnumerateArray ())
+                {
+                    var bytes = TryReadInt (hint, "b", out var bVal) ? bVal : 0;
+                    var name = hint.TryGetProperty ("n", out var nEl) ? nEl.GetString () ?? "" : "";
+                    if (!string.IsNullOrEmpty (name))
+                    {
+                        unpack.Add (new MbcUnpackHint (bytes, name));
+                    }
+                }
+            }
+
+            var rec = new MbcRecoveredCommand
+            {
+                Tag = tag,
+                Region = region,
+                Command = cmd,
+                Name = el.TryGetProperty ("n", out var nameEl) ? nameEl.GetString () ?? "" : "",
+                Module = el.TryGetProperty ("m", out var modEl) ? modEl.GetString () ?? "" : "",
+                Handler = el.TryGetProperty ("h", out var hEl) ? hEl.GetString () ?? "" : "",
+                Source = el.TryGetProperty ("s", out var sEl) ? sEl.GetString () ?? "" : "",
+                Schema = el.TryGetProperty ("w", out var wEl) ? wEl.GetString () ?? "" : "",
+                Unpack = unpack
+            };
+            if (cmd is null)
+            {
+                catalog.byRegion[(tag, region)] = rec;
+            }
+            else
+            {
+                catalog.byCommand[(tag, region, cmd.Value)] = rec;
+                catalog.RememberHandlerCommand (rec, region, cmd.Value);
+            }
+        }
+
+        return catalog;
+    }
+
+    public MbcRecoveredCommand? Find (int tag, int region, int? command, string? handler = null)
+    {
+        if (command is { } cmd && byCommand.TryGetValue ((tag, region, cmd), out var found))
+        {
+            return found;
+        }
+
+        if (command is { } sharedCmd
+            && !string.IsNullOrEmpty (handler)
+            && byHandlerCommand.TryGetValue ((handler, region, sharedCmd), out found))
+        {
+            return found;
+        }
+
+        return byRegion.TryGetValue ((tag, region), out found) ? found : null;
+    }
+
+    private void RememberHandlerCommand (MbcRecoveredCommand rec, int region, int cmd)
+    {
+        if (string.IsNullOrEmpty (rec.Handler) || string.IsNullOrEmpty (rec.Name))
+        {
+            return;
+        }
+
+        // Prefer shared/override names so ContMan.cmd13 on monster resolves like purse.
+        var key = (rec.Handler, region, cmd);
+        if (!byHandlerCommand.TryGetValue (key, out var existing)
+            || IsStrongerSource (rec.Source, existing.Source))
+        {
+            byHandlerCommand[key] = rec;
+        }
+    }
+
+    private static bool IsStrongerSource (string candidate, string existing) =>
+        SourceRank (candidate) > SourceRank (existing);
+
+    private static int SourceRank (string source) =>
+        source switch
+        {
+            "override" => 4,
+            "shared-item" => 3,
+            "decompile" => 2,
+            "alias" => 1,
+            _ => 0
+        };
+
+    private static bool TryReadInt (JsonElement el, string name, out int value)
+    {
+        value = 0;
+        return el.TryGetProperty (name, out var prop)
+               && prop.ValueKind == JsonValueKind.Number
+               && prop.TryGetInt32 (out value);
+    }
+
+    private static string ReadEmbedded (string fileName)
+    {
+        var assembly = Assembly.GetExecutingAssembly ();
+        var resourceName = assembly.GetManifestResourceNames ()
+            .FirstOrDefault (name => name.EndsWith (fileName, StringComparison.OrdinalIgnoreCase));
+        if (resourceName is null)
+        {
+            throw new InvalidOperationException ($"Embedded resource {fileName} was not found");
+        }
+
+        using var stream = assembly.GetManifestResourceStream (resourceName)
+                           ?? throw new InvalidOperationException ($"Embedded resource {fileName} could not be opened");
+        using var reader = new StreamReader (stream);
+        return reader.ReadToEnd ();
+    }
+}

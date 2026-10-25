@@ -1,0 +1,505 @@
+﻿using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Net;
+using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
+using PacketDotNet;
+using PacketLogViewer.Extensions;
+using PacketLogViewer.Models;
+using SharpPcap;
+using SphereHelpers.Extensions;
+
+namespace PacketLogViewer;
+
+public enum PacketSource
+{
+    CLIENT,
+    SERVER
+}
+
+public class PacketCapture : IDisposable
+{
+    private const int DuplicateSuppressionWindowMs = 750;
+
+    private readonly List<ILiveDevice> captureDevices = new ();
+    /// TCP reassembly, keyed by direction and ports
+    private readonly Dictionary<long, List<byte>> packetDataQueuesByFlow = new ();
+    private readonly List<CapturedPacketRawData> rawCapturedPackets = new ();
+    private readonly object captureStateLock = new ();
+    private readonly ManualResetEventSlim _packetsPending = new (false);
+    private readonly CancellationTokenSource _cts = new ();
+    private readonly Task _processingLoopTask;
+    private readonly SphereClientConnectionDiscovery _connectionDiscovery;
+    private readonly Queue<(long hash, long ticks)> recentPayloadHashes = new ();
+    private readonly HashSet<long> recentPayloadHashSet = new ();
+
+    private readonly HashSet<IPAddress> sphereLiveServers = new ()
+    {
+        IPAddress.Parse ("77.223.107.68"),
+        IPAddress.Parse ("77.223.107.69")
+    };
+
+    private static readonly HashSet<int> KnownSphereServerPorts = new () { 25860, 25861 };
+
+    private volatile bool captureLocalTraffic;
+
+    internal short ClientId;
+
+    /// 0 until sphereclient ports are known
+    internal int ObservedLocalClientTcpPort => _connectionDiscovery.ClientLocalPort;
+
+    /// Localhost and private-LAN Sphere traffic
+    public bool CaptureLocalTraffic
+    {
+        get => captureLocalTraffic;
+        set
+        {
+            captureLocalTraffic = value;
+            _connectionDiscovery.PreferLocalConnections = value;
+        }
+    }
+
+    public Action<List<StoredPacket>, bool>? OnPacketProcessed;
+
+    public PacketCapture ()
+    {
+        Encoding.RegisterProvider (CodePagesEncodingProvider.Instance);
+        _connectionDiscovery = new SphereClientConnectionDiscovery (TimeSpan.FromSeconds (5));
+
+        foreach (var device in CaptureDeviceList.Instance)
+        {
+            device.OnPacketArrival += CaptureDeviceOnPacketArrival;
+            captureDevices.Add (device);
+        }
+
+        if (captureDevices.Count == 0)
+        {
+            throw new InvalidOperationException ("No network capture adapters were found.");
+        }
+
+        var time = DateTime.Now;
+        _ = SphObjectDb.GameObjectDataDb;
+        BitStreamExtensions.RegisterBsonMapperForBit ();
+        var timeAfterLoad = DateTime.Now;
+        ConsoleExtensions.WriteLineColored (
+            $"Ready for packets on {captureDevices.Count} adapter(s). Load time: {(timeAfterLoad - time).TotalMilliseconds} msec",
+            ConsoleColor.Yellow);
+
+        _processingLoopTask = Task.Run (PacketQueueProcessingLoop, _cts.Token);
+    }
+
+    internal int CaptureDeviceCount => captureDevices.Count;
+
+    internal string GetCaptureStatusSummary () => _connectionDiscovery.GetStatusSummary (captureDevices.Count);
+
+    public void SetClientId (short clientId)
+    {
+        ClientId = clientId;
+    }
+
+    private void CaptureDeviceOnPacketArrival (object _, SharpPcap.PacketCapture capture)
+    {
+        try
+        {
+            var rawCapture = capture.GetPacket ();
+            var packet = Packet.ParsePacket (rawCapture.LinkLayerType, rawCapture.Data);
+            var ipPacket = packet.Extract<IPPacket> ();
+            if (ipPacket is null)
+            {
+                return;
+            }
+
+            if (!IsSphereCaptureScopeIp (ipPacket))
+            {
+                return;
+            }
+
+            var tcpPacket = packet.Extract<TcpPacket> ();
+            if (tcpPacket is null)
+            {
+                return;
+            }
+
+            var clientLocalPort = _connectionDiscovery.ClientLocalPort;
+            var serverRemotePort = _connectionDiscovery.ServerRemotePort;
+            PacketSource source;
+
+            if (clientLocalPort != 0 && serverRemotePort != 0 &&
+                IsTrackedSphereClientConnection (tcpPacket, clientLocalPort, serverRemotePort))
+            {
+                source = tcpPacket.DestinationPort == serverRemotePort
+                    ? PacketSource.CLIENT
+                    : PacketSource.SERVER;
+            }
+            else if (captureLocalTraffic && TryGetLocalSpherePacketSource (ipPacket, tcpPacket, out source))
+            {
+                // Port discovery can lag; still accept clearly local Sphere traffic.
+            }
+            else
+            {
+                return;
+            }
+
+            var payload = tcpPacket.PayloadData;
+            if (payload is null || payload.Length == 0)
+            {
+                return;
+            }
+
+            // The same TCP segment can arrive on more than one adapter within a short window
+            var tcpSequence = tcpPacket.SequenceNumber;
+            if (IsDuplicateTcpSegment (source, tcpPacket.SourcePort, tcpPacket.DestinationPort, tcpSequence,
+                    payload))
+            {
+                return;
+            }
+
+            var flowKey = GetFlowKey (source, tcpPacket.SourcePort, tcpPacket.DestinationPort);
+
+            lock (captureStateLock)
+            {
+                if (!packetDataQueuesByFlow.TryGetValue (flowKey, out var queue))
+                {
+                    queue = new List<byte> ();
+                    packetDataQueuesByFlow[flowKey] = queue;
+                }
+
+                queue.AddRange (payload);
+                if (!tcpPacket.Push)
+                {
+                    return;
+                }
+
+                var combinedPacket = queue.ToArray ();
+                queue.Clear ();
+                SchedulePacketProcessing (combinedPacket, source, rawCapture.Timeval.Date);
+            }
+        }
+        catch (Exception ex)
+        {
+            ConsoleExtensions.WriteException (ex);
+        }
+    }
+
+    private static long GetFlowKey (PacketSource source, int sourcePort, int destinationPort)
+    {
+        return ((long) (byte) source << 32) | ((uint) sourcePort << 16) | (ushort) destinationPort;
+    }
+
+    private bool IsDuplicateTcpSegment (PacketSource source, int sourcePort, int destinationPort,
+        uint tcpSequence, byte[] payload)
+    {
+        // Mix direction, ports, TCP seq, and a cheap payload fingerprint.
+        long hash = (long) (byte) source << 56;
+        hash ^= (long) (ushort) sourcePort << 40;
+        hash ^= (long) (ushort) destinationPort << 24;
+        hash ^= tcpSequence;
+        hash ^= payload.Length * 397L;
+        if (payload.Length > 0)
+        {
+            hash ^= payload[0];
+            hash ^= (long) payload[^1] << 8;
+            hash ^= (long) payload[payload.Length / 2] << 16;
+        }
+
+        for (var i = 0; i < Math.Min (payload.Length, 16); i++)
+        {
+            hash = (hash * 31) ^ payload[i];
+        }
+
+        var now = Environment.TickCount64;
+        lock (captureStateLock)
+        {
+            while (recentPayloadHashes.Count > 0 &&
+                   now - recentPayloadHashes.Peek ().ticks > DuplicateSuppressionWindowMs)
+            {
+                var expired = recentPayloadHashes.Dequeue ();
+                recentPayloadHashSet.Remove (expired.hash);
+            }
+
+            if (!recentPayloadHashSet.Add (hash))
+            {
+                return true;
+            }
+
+            recentPayloadHashes.Enqueue ((hash, now));
+            return false;
+        }
+    }
+
+    private static bool IsTrackedSphereClientConnection (TcpPacket tcpPacket, int clientLocalPort, int serverRemotePort)
+    {
+        return (tcpPacket.SourcePort == clientLocalPort && tcpPacket.DestinationPort == serverRemotePort) ||
+               (tcpPacket.SourcePort == serverRemotePort && tcpPacket.DestinationPort == clientLocalPort);
+    }
+
+    private bool IsSphereCaptureScopeIp (IPPacket ipPacket)
+    {
+        if (sphereLiveServers.Contains (ipPacket.DestinationAddress) ||
+            sphereLiveServers.Contains (ipPacket.SourceAddress))
+        {
+            return true;
+        }
+
+        if (!captureLocalTraffic)
+        {
+            return false;
+        }
+
+        return SphereClientConnectionDiscovery.IsLocalCaptureAddress (ipPacket.SourceAddress) ||
+               SphereClientConnectionDiscovery.IsLocalCaptureAddress (ipPacket.DestinationAddress);
+    }
+
+    private static bool TryGetLocalSpherePacketSource (IPPacket ipPacket, TcpPacket tcpPacket, out PacketSource source)
+    {
+        source = PacketSource.SERVER;
+
+        var localEndpoint =
+            SphereClientConnectionDiscovery.IsLocalCaptureAddress (ipPacket.SourceAddress) ||
+            SphereClientConnectionDiscovery.IsLocalCaptureAddress (ipPacket.DestinationAddress);
+        if (!localEndpoint)
+        {
+            return false;
+        }
+
+        if (KnownSphereServerPorts.Contains (tcpPacket.DestinationPort))
+        {
+            source = PacketSource.CLIENT;
+            return true;
+        }
+
+        if (KnownSphereServerPorts.Contains (tcpPacket.SourcePort))
+        {
+            source = PacketSource.SERVER;
+            return true;
+        }
+
+        return false;
+    }
+
+    private void SchedulePacketProcessing (byte[] data, PacketSource source, DateTime arrivalTime,
+        bool shouldDecode = true)
+    {
+        // Caller must already hold captureStateLock when invoked from the capture path.
+        byte[] decodedData;
+        if (shouldDecode && source == PacketSource.CLIENT)
+        {
+            decodedData = PacketDecoder.DecodeClientPacket (data);
+        }
+        else
+        {
+            decodedData = data;
+        }
+
+        rawCapturedPackets.Add (new CapturedPacketRawData
+        {
+            ArrivalTime = arrivalTime,
+            Buffer = data,
+            DecodedBuffer = decodedData,
+            Source = source
+        });
+
+        _packetsPending.Set ();
+    }
+
+    private void PacketQueueProcessingLoop ()
+    {
+        foreach (var device in captureDevices)
+        {
+            device.Open ();
+            device.StartCapture ();
+        }
+
+        while (!_cts.IsCancellationRequested)
+        {
+            try
+            {
+                var hasDeferredServerPackets = ProcessPacketQueue ();
+                if (hasDeferredServerPackets)
+                {
+                    _packetsPending.Wait (TimeSpan.FromMilliseconds (50), _cts.Token);
+                    continue;
+                }
+            }
+            catch (Exception ex)
+            {
+                ConsoleExtensions.WriteException (ex);
+            }
+
+            _packetsPending.Reset ();
+            _packetsPending.Wait (TimeSpan.FromMilliseconds (100), _cts.Token);
+        }
+
+        foreach (var device in captureDevices)
+        {
+            try
+            {
+                device.StopCapture ();
+            }
+            catch
+            {
+                // best-effort stop
+            }
+
+            try
+            {
+                device.Close ();
+            }
+            catch
+            {
+                // best-effort close
+            }
+        }
+    }
+
+    private bool ProcessPacketQueue ()
+    {
+        List<CapturedPacketRawData> snapshot;
+        lock (captureStateLock)
+        {
+            snapshot = rawCapturedPackets.ToList ();
+        }
+
+        var packetsToProcess = new Dictionary<PacketSource, List<CapturedPacketRawData>>
+        {
+            [PacketSource.CLIENT] = new (),
+            [PacketSource.SERVER] = new ()
+        };
+        // Brief hold for server packets so fragments sharing a sequence number can be combined.
+        var serverReorderCutoff = DateTime.Now.AddMilliseconds (-100);
+        var hasDeferredServerPackets = false;
+
+        for (var index = 0; index < snapshot.Count; index++)
+        {
+            var rawCapturedPacket = snapshot[index];
+            if (rawCapturedPacket.WasProcessed)
+            {
+                continue;
+            }
+
+            if (rawCapturedPacket.Source == PacketSource.SERVER &&
+                rawCapturedPacket.ArrivalTime > serverReorderCutoff)
+            {
+                hasDeferredServerPackets = true;
+                continue;
+            }
+
+            rawCapturedPacket.WasProcessed = true;
+            packetsToProcess[rawCapturedPacket.Source].Add (rawCapturedPacket);
+        }
+
+        packetsToProcess[PacketSource.CLIENT].Sort (CapturedPacketRawData.Compare);
+        packetsToProcess[PacketSource.SERVER].Sort (CapturedPacketRawData.Compare);
+
+        var combinedList = CapturedPacketRawData.CombinePacketsInSequence (packetsToProcess[PacketSource.SERVER]);
+
+        combinedList.ForEach (ProcessPacketRawData);
+        packetsToProcess[PacketSource.CLIENT].ForEach (ProcessPacketRawData);
+
+        return hasDeferredServerPackets;
+    }
+
+    public static List<byte[]> SplitContentIntoPackets (byte[] content)
+    {
+        var offset = 0;
+        var result = new List<byte[]> ();
+        var tries = 0;
+        while (offset < content.Length && tries < 1000)
+        {
+            tries++;
+            if (content.HasEqualElementsAs (PacketAnalyzer.packet_04_00_4F_01, offset))
+            {
+                result.Add (PacketAnalyzer.packet_04_00_4F_01);
+
+                offset += 4;
+                continue;
+            }
+
+            if (!content.HasEqualElementsAs (PacketAnalyzer.ok_mark, 2))
+            {
+                result.Add (content[offset..]);
+                break;
+            }
+
+            var subspanTotalLength = BitConverter.ToInt16 (content, offset);
+            var end = offset + subspanTotalLength;
+
+            if (end > content.Length)
+            {
+                continue;
+            }
+
+            try
+            {
+                result.Add (content[offset..end]);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine (ex.Message);
+            }
+
+            offset = end;
+        }
+
+        return result;
+    }
+
+    internal void ProcessPacketRawData (CapturedPacketRawData packetRawData)
+    {
+        ProcessPacketRawDataForce (packetRawData);
+    }
+
+    internal void ProcessPacketRawDataForce (CapturedPacketRawData packetRawData, bool forceProcess = false)
+    {
+        var subpackets = SplitContentIntoPackets (packetRawData.DecodedBuffer);
+        var storedPackets = new List<StoredPacket> ();
+        for (var index = 0; index < subpackets.Count; index++)
+        {
+            var subpacket = subpackets[index];
+            var storedPacket = new StoredPacket
+            {
+                ContentBytes = subpacket,
+                Source = packetRawData.Source,
+                Timestamp = packetRawData.ArrivalTime,
+                NumberInSequence = index
+            };
+            PacketAnalyzer.RefreshHiddenByDefaultFlags (storedPacket);
+            storedPackets.Add (storedPacket);
+        }
+
+        OnPacketProcessed?.Invoke (storedPackets, forceProcess);
+    }
+
+    public void Stop ()
+    {
+        if (_cts.IsCancellationRequested)
+        {
+            return;
+        }
+
+        _cts.Cancel ();
+        try
+        {
+            _processingLoopTask.Wait (TimeSpan.FromSeconds (2));
+        }
+        catch
+        {
+            // best-effort shutdown
+        }
+    }
+
+    public void Dispose ()
+    {
+        Stop ();
+        foreach (var device in captureDevices)
+        {
+            device.OnPacketArrival -= CaptureDeviceOnPacketArrival;
+        }
+
+        _connectionDiscovery.Dispose ();
+        _packetsPending.Dispose ();
+        _cts.Dispose ();
+    }
+}

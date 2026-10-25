@@ -1,0 +1,13 @@
+[gd_scene format=3 uid="uid://clfp686cd6kou"]
+
+[ext_resource type="Script" uid="uid://fypv53wo0kq4" path="res://Sphere.Game/WorldObject/TeleportWithTarget.cs" id="1_rs7kr"]
+[ext_resource type="PackedScene" path="res://Godot/Models/portal1.scn" id="2_5xnku"]
+
+[node name="TeleportWithTarget" type="Node3D" unique_id=1943050220]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 10000, 10000, 10000)
+script = ExtResource("1_rs7kr")
+ObjectType = 62
+
+[node name="Glb" parent="." unique_id=1279009133 instance=ExtResource("2_5xnku")]
+unique_name_in_owner = true
+metadata/_world_object_glb = true

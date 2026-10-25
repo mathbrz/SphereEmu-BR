@@ -1,0 +1,8 @@
+# Areas that need a maintainer's review (see CONTRIBUTING.md)
+* @mathbrz
+/Server/Login/ @mathbrz
+/Server/Config/ @mathbrz
+/Server/Debug/ @mathbrz
+/Shared/Db/ @mathbrz
+/.github/ @mathbrz
+/AGENTS.md @mathbrz

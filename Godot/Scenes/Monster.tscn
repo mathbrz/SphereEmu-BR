@@ -1,0 +1,33 @@
+[gd_scene format=3 uid="uid://jecy1l185txr"]
+
+[ext_resource type="Script" uid="uid://c50t8tdfgk4jf" path="res://Sphere.Game/WorldObject/Monster.cs" id="1_8qwjm"]
+
+[sub_resource type="CapsuleShape3D" id="68"]
+radius = 0.3
+
+[node name="Monster" type="CharacterBody3D" unique_id=1719472681]
+script = ExtResource("1_8qwjm")
+CurrentHp = 80
+MaxHp = 80
+BasePAtk = -8
+BasePDef = 1
+InstanceKarmaType = 1
+DataGameId = 1000
+DataObjectType = 54
+DataObjectKind = 15
+DataSphereType = "monster"
+DataModelNameGround = "npc40"
+DataModelNameInventory = "npc40"
+DataKarmaType = 1
+DataMaxLevel = 2
+DataHpPerLevel = 80
+DataPDefPerLevel = 1
+DataPAtkPerLevel = -8
+DataMutatorName = "0"
+DataRange = 3
+DataAttackDelay = 6.0
+
+[node name="ModelCollision" type="CollisionShape3D" parent="." unique_id=1838886289]
+shape = SubResource("68")
+
+[node name="MonsterMultiMeshVisuals" type="Node3D" parent="." unique_id=242413538]

@@ -1,0 +1,593 @@
+using System.Collections.Generic;
+using System.Linq;
+using System.Threading.Tasks;
+using BitStreams;
+using SphServer.Client.Networking.Handlers.InGame.Items;
+using Godot;
+using SphereHelpers.Extensions;
+using SphServer.Client.Networking.GameplayLogic.Stats;
+using SphServer.Helpers.Networking;
+using SphServer.Server;
+using SphServer.Server.Config;
+using SphServer.Shared.BitStream;
+using SphServer.Shared.Db;
+using SphServer.Shared.Db.DataModels;
+using SphServer.Shared.Logger;
+using SphServer.Shared.Networking;
+using SphServer.Shared.WorldState;
+using SphServer.Sphere.Game.WorldObject;
+
+namespace SphServer.Client.Networking.Handlers.InGame.DamageHealEffects;
+
+/// <summary>
+/// Classification of an incoming combat frame. Length is not part of the identity.
+/// </summary>
+public enum AttackFrameKind
+{
+    /// <summary>
+    /// Left-click / use-on-target: GameplayAction.Attack, usually seen as 08 40 A3 at bytes 13-15.
+    /// </summary>
+    MeleeOrMagicAttack = 0,
+
+    /// <summary>
+    /// Alt-self (54 43 C1, own id at bits 172-187) is a real hit, and Radius still splashes
+    /// </summary>
+    SelfTargetedAction = 1,
+
+    /// <summary>
+    /// 7E 14 CE at bytes 22-24; the target id is not in the fist slot
+    /// </summary>
+    WeaponAttack = 2,
+
+    /// <summary>
+    /// Not an attack, e.g. 08 40 83 right-click or use on a dead target, absorbed silently
+    /// </summary>
+    NotAnAttack = 3
+}
+
+// 0x19/0x20 fallback: anything that is not a buy (08 40 03) lands here
+public class DamageTargetHandler(ushort localId, ClientConnection clientConnection)
+    : ISphereClientNetworkingHandler
+{
+    public async Task Handle(byte[] frame, double delta)
+    {
+        // Ack first so g_6008 clears even when parse returns early
+        clientConnection.MaybeScheduleNetworkPacketSend(CommonPackets.ClearUseToutAck(localId));
+
+        var character = clientConnection.GetSelectedCharacter();
+        var broadcastTarget = ActiveClients.Get(localId);
+        if (character is null || broadcastTarget is null)
+        {
+            // Source is the raw local id: with no client there is nothing to resolve it against.
+            LogAction(localId, 0, AttackFrameKind.NotAnAttack,
+                character is null ? "skip-no-character" : "skip-no-client");
+            return;
+        }
+
+        SphLogger.Info($"DamageTargetHandler: {Convert.ToHexString(frame)}");
+
+        var broadcastTargetGlobalId = broadcastTarget.GetGlobalObjectId(localId);
+        var heldItem = character.GetHeldItem();
+        var frameKind = ParseAttackFrame(frame, heldItem, out var localTargetId);
+
+        var clickedItemId = broadcastTarget.GetGlobalObjectId (localTargetId);
+        if (DbConnection.Items.FindById ((int) clickedItemId) is { DroppedOnGroundBy: not null } groundItem)
+        {
+            PickupItemHandler.PickUpFromGround (broadcastTarget, clientConnection, groundItem);
+            return;
+        }
+
+        // 0x19 empty-to-sword shares 08 40 A3 with a fist swing, but the item id is the take
+        if (IsTakeMainhand(character, frame, localTargetId))
+        {
+            LogAction(broadcastTargetGlobalId, localTargetId, frameKind, "take-mainhand");
+            await clientConnection.HandleTakeMainhand(frame, delta);
+            return;
+        }
+
+        if (frameKind is AttackFrameKind.NotAnAttack)
+        {
+            LogAction(broadcastTargetGlobalId, localTargetId, frameKind, "skip");
+            return;
+        }
+
+        // 0 = no id in the frame, 0xFFFF = the client's no-target sentinel
+        // (target despawned mid-click).
+        if (localTargetId is 0 or ushort.MaxValue)
+        {
+            LogAction(broadcastTargetGlobalId, localTargetId, frameKind, "skip");
+            return;
+        }
+
+        var globalTargetId = broadcastTarget.GetGlobalObjectId(localTargetId);
+        if (IsHealingMantra(heldItem))
+        {
+            HealWithMantra(broadcastTarget, character, heldItem, globalTargetId);
+            return;
+        }
+
+        // Fists have no Radius, so they never splash
+        var aoeRadius = heldItem.GameObjectType is GameObjectType.Fists ? 0 : heldItem.Radius;
+        // Self-aimed wire is often ByteSwap(clientId), and a blast on a mob still includes the
+        // caster inside Radius
+        var includeSelf = frameKind is AttackFrameKind.SelfTargetedAction
+                          || IsAttackerTargetId (broadcastTarget, globalTargetId);
+        var targets = CollectTargets (broadcastTarget, globalTargetId, aoeRadius, includeSelf).ToList ();
+        LogAction(broadcastTargetGlobalId, globalTargetId, frameKind,
+            $"held={heldItem.GameId} radius={aoeRadius} includeSelf={includeSelf} targets={targets.Count}");
+        // Paid once per use, before the hits, so a self-cast MP heal lands on the lowered value
+        if (IsPowder (heldItem) && targets.Count > 0 && !TryPayMpCost (broadcastTarget, character, heldItem))
+        {
+            LogAction (broadcastTargetGlobalId, globalTargetId, frameKind,
+                $"skip-no-mp cost={-heldItem.MpCost} mp={character.CurrentMP}");
+            return;
+        }
+
+        foreach (var (targetGlobalId, targetLocalId) in targets)
+        {
+            clientConnection.EnqueueClientEvent(new CombatHitEvent(
+                broadcastTargetGlobalId, targetGlobalId, targetLocalId, frameKind));
+        }
+
+        // The client only sends cuse and never lowers its own amount; one powder per use, not per AoE target,
+        // and only after the hits above have read the powder from the hand
+        if (IsPowder (heldItem) && targets.Count > 0)
+        {
+            clientConnection.EnqueueClientEvent (new ItemSpentEvent (heldItem));
+        }
+    }
+
+    private static bool IsPowder (ItemDbEntry item) =>
+        item.GameObjectType is GameObjectType.Powder or GameObjectType.Powder_Area or GameObjectType.Powder_Event
+            or GameObjectType.Powder_Guild;
+
+    /// <summary>
+    /// The params MP column is negative for a cost (-20 = 20 MP); the client never lowers its own MP on use
+    /// </summary>
+    private static bool TryPayMpCost (SphereClient client, CharacterDbEntry character, ItemDbEntry powder)
+    {
+        var cost = -powder.MpCost;
+        if (cost <= 0)
+        {
+            return true;
+        }
+
+        if (character.CurrentMP < cost)
+        {
+            return false;
+        }
+
+        character.CurrentMP = (ushort) (character.CurrentMP - cost);
+        client.MaybeQueueNetworkPacketSend (CommonPackets.BuildPlayerSetStat (
+            SphBitStream.ByteSwap (character.ClientIndex), (byte) Stat.MpCurrent, character.CurrentMP));
+        NetworkedStatsUpdater.Update (character, refreshPeers: false);
+        return true;
+    }
+
+    private DateTime mantraReadyUtc;
+
+    // A little under the real time, so a use that reaches the server a few milliseconds early is not refused.
+    private const double MantraUseTolerance = 0.9;
+
+    /// <summary>
+    ///     Seconds between two uses of a mantra. Read from the client tooltip at 14 stack sizes of three mantras: with a
+    ///     single mantra the time is almost twice the catalog UseTime and it falls in a straight line to the UseTime itself
+    ///     once the stack holds twice the mantra level. time = UseTime x (2 - min(stack, cap) / cap), cap = 2 x level.
+    /// </summary>
+    private static double MantraUseSeconds(ItemDbEntry mantra)
+    {
+        var baseSeconds = Math.Max(1, mantra.UseTime) / 100.0;
+        var cap = Math.Max(1, 2 * mantra.Tier);
+        var stack = Math.Clamp(mantra.ItemCount, 1, cap);
+        return baseSeconds * (2.0 - (double) stack / cap);
+    }
+
+    private static bool IsHealingMantra(ItemDbEntry held) =>
+        held.GameObjectType is GameObjectType.MantraWhite && held.MutatorId == 0
+        && (held.MAtkNegativeOrHeal > 0 || held.MPHeal > 0);
+
+    /// <summary>
+    ///     Retail heals the caster, or the player it is aimed at, for exactly the item's heal value (+1810 for
+    ///     mantra 2331 in all 28 casts of sessao1 and sessao2), spends MpCost, and the item has a UseTime
+    ///     (hundredths of a second) between casts. The heal reaches the victim as a received hit that names
+    ///     the caster with a positive delta. Aiming it at a monster does nothing.
+    /// </summary>
+    private void HealWithMantra(SphereClient caster, CharacterDbEntry casterCharacter, ItemDbEntry mantra,
+        ushort globalTargetId)
+    {
+        var now = DateTime.UtcNow;
+        if (now < mantraReadyUtc)
+        {
+            return;
+        }
+
+        var self = IsAttackerTargetId(caster, globalTargetId);
+        var target = self ? caster : FindPlayerClient(globalTargetId);
+        if (target?.CurrentCharacter is not { CurrentHP: > 0 } targetCharacter)
+        {
+            SphLogger.Info($"Mantra {mantra.GameId}: no player to heal at {globalTargetId:X4}. Client ID: {localId:X4}");
+            return;
+        }
+
+        var mpCost = Math.Abs(mantra.MpCost);
+        if (casterCharacter.CurrentMP < mpCost)
+        {
+            SphLogger.Info($"Mantra {mantra.GameId}: not enough MP ({casterCharacter.CurrentMP}/{mpCost}). " +
+                           $"Client ID: {localId:X4}");
+            return;
+        }
+
+        // A prana mantra is paid in health, not in prana (catalog HpCost, 92 for level XII); it is refused when the
+        // caster could not pay it and stay alive.
+        var hpCost = Math.Abs(mantra.HpCost);
+        if (hpCost > 0 && casterCharacter.CurrentHP <= hpCost)
+        {
+            SphLogger.Info($"Mantra {mantra.GameId}: not enough health ({casterCharacter.CurrentHP}/{hpCost}). " +
+                           $"Client ID: {localId:X4}");
+            return;
+        }
+
+        casterCharacter.CurrentMP = (ushort)(casterCharacter.CurrentMP - mpCost);
+        mantraReadyUtc = now.AddSeconds(MantraUseSeconds(mantra) * MantraUseTolerance);
+        SphereServer.ServerNode.GetTree().CreateTimer(MantraUseSeconds(mantra)).Timeout += () =>
+            clientConnection.MaybeScheduleNetworkPacketSend(CommonPackets.BuildPlayerMantraReady(localId));
+        if (hpCost > 0)
+        {
+            caster.EnqueueClientEvent(new CharacterHealthChangeEvent(casterCharacter.ClientIndex, -hpCost));
+        }
+
+        // Retail names the caster as the victim knows it; for a self heal that is its own process id.
+        var casterId = self
+            ? SphBitStream.ByteSwap(casterCharacter.ClientIndex)
+            : target.GetLocalObjectId(caster.ID);
+        if (mantra.MAtkNegativeOrHeal > 0)
+        {
+            target.EnqueueClientEvent(
+                new CharacterHealthChangeEvent(targetCharacter.ClientIndex, mantra.MAtkNegativeOrHeal, casterId));
+        }
+
+        if (mantra.MPHeal > 0)
+        {
+            targetCharacter.CurrentMP = (ushort)Math.Min(targetCharacter.MaxMP,
+                targetCharacter.CurrentMP + mantra.MPHeal);
+            if (!ReferenceEquals(targetCharacter, casterCharacter))
+            {
+                NetworkedStatsUpdater.Update(targetCharacter, refreshPeers: false);
+            }
+        }
+
+        NetworkedStatsUpdater.Update(casterCharacter, refreshPeers: false);
+        SphLogger.Info($"Mantra {mantra.GameId}: healed {(self ? "self" : target.localId.ToString("X4"))} by " +
+                       $"HP {mantra.MAtkNegativeOrHeal} MP {mantra.MPHeal}, MP -{mpCost}. Client ID: {localId:X4}");
+    }
+
+    private static SphereClient? FindPlayerClient(ushort globalId)
+    {
+        foreach (var client in ActiveClients.GetAll().Values)
+        {
+            if (client is not null && GodotObject.IsInstanceValid(client) &&
+                (client.ID == globalId || client.GetGlobalObjectId(client.localId) == globalId))
+            {
+                return client;
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Live client id, WorldObject.ID, or the byte-swapped client id on self-aimed AoE
+    /// </summary>
+    private static bool IsAttackerTargetId(SphereClient attacker, ushort globalId)
+    {
+        var clientId = attacker.GetGlobalObjectId(attacker.localId);
+        return globalId == clientId
+               || globalId == attacker.ID
+               || globalId == SphBitStream.ByteSwap(clientId);
+    }
+
+    private static bool IsTakeMainhand(CharacterDbEntry character, byte[] frame, ushort combatTargetId)
+    {
+        if (ClientPacketClassifier.IsHandChangeSignature(frame))
+        {
+            return true;
+        }
+
+        var declaredLength = frame[0] | (frame[1] << 8);
+        if (MainhandFrame.IsExclusiveTakeLength(declaredLength))
+        {
+            return true;
+        }
+
+        if (MainhandFrame.TryRead(frame, out var take))
+        {
+            // 0x19 A3 + 0xFFFF is put-down, A3 plus an owned item is a take, and a monster id there
+            // is a swing
+            return take.ItemId == MainhandFrame.NoItem || IsOwnedItemId(character, take.ItemId);
+        }
+
+        return IsOwnedItemId(character, combatTargetId);
+    }
+
+    private static bool IsOwnedItemId(CharacterDbEntry character, ushort id)
+    {
+        if (id is 0 or ushort.MaxValue)
+        {
+            return false;
+        }
+
+        return character.Items.ContainsValue (id);
+    }
+
+    private static void LogAction(ushort sourceGlobalId, ushort targetGlobalId, AttackFrameKind action, string result)
+    {
+        SphLogger.Info($"DamageTargetHandler: Source [{sourceGlobalId:X4}] - Target [{targetGlobalId:X4}] - " +
+                       $"Action [{action}] - [{result}]");
+    }
+
+    /// <summary>
+    /// Fist / bare-hand layout: the clicked id sits here.
+    /// </summary>
+    private const int FistTargetBit = 172;
+
+    /// <summary>
+    /// AoE powder list: first (aimed) target. Single-target powder is not this slot.
+    /// </summary>
+    private const int AoeTargetBit = 220;
+
+    /// <summary>
+    /// Weapon swing slot; bit 172 on these frames is the 12-bit ObjectType, not a target
+    /// </summary>
+    private const int ArmedTargetBit = 233;
+
+    /// <summary>
+    /// 12-bit ObjectType sitting next to the fist-target slot on item-use frames.
+    /// </summary>
+    private const int ItemObjectTypeBit = 174;
+
+    /// <summary>
+    /// Length is not identity; splash ids in the frame are ignored and AoE comes from the held item
+    /// </summary>
+    public static AttackFrameKind ParseAttackFrame(byte[] receiveBuffer, out ushort localTargetId) =>
+        ParseAttackFrame(receiveBuffer, null, out localTargetId);
+
+    public static AttackFrameKind ParseAttackFrame(byte[] receiveBuffer, ItemDbEntry? heldItem,
+        out ushort localTargetId)
+    {
+        localTargetId = 0;
+        if (receiveBuffer.Length < 16)
+        {
+            return AttackFrameKind.NotAnAttack;
+        }
+
+        if (ClientPacketClassifier.IsHandChangeSignature(receiveBuffer))
+        {
+            return AttackFrameKind.NotAnAttack;
+        }
+
+        if (receiveBuffer[13] == 0x54 && receiveBuffer[14] == 0x43 && receiveBuffer[15] == 0xC1)
+        {
+            localTargetId = ReadU16AtBit(receiveBuffer, FistTargetBit);
+            return AttackFrameKind.SelfTargetedAction;
+        }
+
+        if (receiveBuffer.Length >= 25 && receiveBuffer[22] == 0x7E && receiveBuffer[23] == 0x14 &&
+            receiveBuffer[24] == 0xCE)
+        {
+            localTargetId = ReadMainTargetId(receiveBuffer, heldItem);
+            return AttackFrameKind.WeaponAttack;
+        }
+
+        // 08 40 A3 is shared with take, swap, and NPC interact; GameplayAction.Attack is the
+        // length-independent check
+        var attackSignature = receiveBuffer[13] == 0x08 && receiveBuffer[14] == 0x40 && receiveBuffer[15] == 0xA3;
+        var attackRecord = GameplayRecord.ActionOf(GameplayRecord.ReadIdentity(receiveBuffer)) ==
+                           GameplayAction.Attack;
+        if (!attackSignature && !attackRecord)
+        {
+            return AttackFrameKind.NotAnAttack;
+        }
+
+        localTargetId = ReadMainTargetId(receiveBuffer, heldItem);
+        return AttackFrameKind.MeleeOrMagicAttack;
+    }
+
+    /// <summary>
+    /// A 0x2C swing still has the weapon type at the item slot, so bit 172 is that type (501 as
+    /// 47D4), not the mob
+    /// </summary>
+    private static ushort ReadMainTargetId(byte[] frame, ItemDbEntry? heldItem)
+    {
+        var typeAtItemSlot = ReadU12AtBit(frame, ItemObjectTypeBit);
+        if (IsAoePowderLayout(heldItem, typeAtItemSlot))
+        {
+            return ReadU16AtBit(frame, AoeTargetBit);
+        }
+
+        if (IsArmedAttackLayout(frame))
+        {
+            return ReadU16AtBit(frame, ArmedTargetBit);
+        }
+
+        if (heldItem is null || heldItem.GameObjectType is GameObjectType.Fists)
+        {
+            return ReadU16AtBit(frame, FistTargetBit);
+        }
+
+        return ReadU16AtBit(frame, ArmedTargetBit);
+    }
+
+    /// <summary>
+    /// 0x2C is the armed swing; on 0x19 the type slot is two bits into the take id
+    /// </summary>
+    private static bool IsArmedAttackLayout(byte[] frame)
+    {
+        var declaredLength = frame.Length >= 2 ? frame[0] | (frame[1] << 8) : 0;
+        return declaredLength == 0x2C;
+    }
+
+    /// <summary>
+    /// AoE powder (0x2D/0x30) aims at bit 220; single-target powder is a 0x2C item-use
+    /// </summary>
+    private static bool IsAoePowderLayout(ItemDbEntry? heldItem, ushort typeAtItemSlot) =>
+        typeAtItemSlot == (ushort)ObjectType.Powder_Ao_E ||
+        heldItem is { Radius: > 0, GameObjectType: GameObjectType.Powder_Area };
+
+    private static IEnumerable<(ushort GlobalId, ushort LocalId)> CollectTargets(SphereClient attacker,
+        ushort mainGlobalId, int aoeRadius, bool includeSelf)
+    {
+        var mainIsSelf = IsAttackerTargetId(attacker, mainGlobalId);
+        if (includeSelf || !mainIsSelf)
+        {
+            // Self-aimed frames may carry ByteSwap(clientId), so this yields the live client id
+            var yieldGlobalId = mainIsSelf
+                ? attacker.GetGlobalObjectId(attacker.localId)
+                : mainGlobalId;
+            yield return (yieldGlobalId, attacker.GetLocalObjectId(yieldGlobalId));
+        }
+
+        if (aoeRadius <= 0)
+        {
+            yield break;
+        }
+
+        if (!TryResolveAoeCenter(attacker, mainGlobalId, out var center))
+        {
+            yield break;
+        }
+
+        var radiusSquared = aoeRadius * (float)aoeRadius;
+        // The aim point is the mob, so the caster is a splash target inside that disk
+        if (!mainIsSelf && TryGetCombatWorldPosition (attacker, out var selfPosition) &&
+            center.DistanceSquaredTo (selfPosition) <= radiusSquared)
+        {
+            var selfId = attacker.GetGlobalObjectId (attacker.localId);
+            yield return (selfId, attacker.GetLocalObjectId (selfId));
+        }
+        var clientId = attacker.GetGlobalObjectId(attacker.localId);
+        var seen = new HashSet<ushort>
+        {
+            mainGlobalId,
+            clientId,
+            attacker.ID,
+            SphBitStream.ByteSwap(clientId)
+        };
+
+        foreach (var worldObject in ActiveWorldObjects.GetAll().Values)
+        {
+            if (worldObject is not Monster and not SphereClient)
+            {
+                continue;
+            }
+
+            if (!GodotObject.IsInstanceValid(worldObject) || !seen.Add(worldObject.ID))
+            {
+                continue;
+            }
+
+            if (IsAttackerTargetId(attacker, worldObject.ID))
+            {
+                continue;
+            }
+
+            if (!TryGetCombatWorldPosition(worldObject, out var position))
+            {
+                continue;
+            }
+
+            if (center.DistanceSquaredTo(position) > radiusSquared)
+            {
+                continue;
+            }
+
+            if (worldObject is Monster { IsDead: true })
+            {
+                continue;
+            }
+
+            yield return (worldObject.ID, attacker.GetLocalObjectId(worldObject.ID));
+        }
+
+        foreach (var otherClient in ActiveClients.GetAll().Values)
+        {
+            if (otherClient is null || IsAttackerTargetId(attacker, otherClient.localId) ||
+                IsAttackerTargetId(attacker, otherClient.ID) || !seen.Add(otherClient.ID))
+            {
+                continue;
+            }
+
+            if (!ClientWorldPosition.TryGetGodotWorldPosition(otherClient, out var position))
+            {
+                continue;
+            }
+
+            if (center.DistanceSquaredTo(position) > radiusSquared)
+            {
+                continue;
+            }
+
+            yield return (otherClient.ID, attacker.GetLocalObjectId(otherClient.ID));
+        }
+    }
+
+    /// <summary>
+    /// Aimed object, or the attacker when the aim is self; a missing non-self aim aborts splash
+    /// </summary>
+    private static bool TryResolveAoeCenter(SphereClient attacker, ushort mainGlobalId, out Vector3 center)
+    {
+        if (IsAttackerTargetId(attacker, mainGlobalId))
+        {
+            return TryGetCombatWorldPosition(attacker, out center);
+        }
+
+        var mainObject = ActiveWorldObjects.Get(mainGlobalId);
+        if (mainObject is null || !GodotObject.IsInstanceValid(mainObject))
+        {
+            center = Vector3.Zero;
+            return false;
+        }
+
+        return TryGetCombatWorldPosition(mainObject, out center);
+    }
+
+    private static bool TryGetCombatWorldPosition(WorldObject worldObject, out Vector3 position)
+    {
+        if (worldObject is SphereClient client)
+        {
+            return ClientWorldPosition.TryGetGodotWorldPosition(client, out position);
+        }
+
+        if (!GodotObject.IsInstanceValid(worldObject))
+        {
+            position = Vector3.Zero;
+            return false;
+        }
+
+        position = worldObject.GlobalPosition;
+        return true;
+    }
+
+    private static ushort ReadU16AtBit(byte[] frame, int bit)
+    {
+        if (frame.Length * 8 < bit + 16)
+        {
+            return 0;
+        }
+
+        var stream = new BitStream(frame);
+        stream.ReadBits(bit);
+        return stream.ReadUInt16();
+    }
+
+    private static ushort ReadU12AtBit(byte[] frame, int bit)
+    {
+        if (frame.Length * 8 < bit + 12)
+        {
+            return 0;
+        }
+
+        var stream = new BitStream(frame);
+        stream.ReadBits(bit);
+        return stream.ReadUInt16(12);
+    }
+}

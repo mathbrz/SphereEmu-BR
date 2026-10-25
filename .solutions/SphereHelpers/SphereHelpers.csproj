@@ -1,0 +1,34 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <TargetFramework>net9.0</TargetFramework>
+        <ImplicitUsings>enable</ImplicitUsings>
+        <Nullable>enable</Nullable>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <PackageReference Include="System.Text.Encoding.CodePages" Version="9.0.0" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="..\SphEntities\SphEntities.csproj"/>
+        <ProjectReference Include="..\SphGameObject\SphGameObject.csproj"/>
+        <ProjectReference Include="..\SphObjectDb\SphObjectDb.csproj"/>
+    </ItemGroup>
+
+    <ItemGroup>
+        <Reference Include="BitStreams">
+            <HintPath>..\..\.references\BitStreams.dll</HintPath>
+        </Reference>
+        <Reference Include="LiteDB">
+            <HintPath>..\..\.references\LiteDB.dll</HintPath>
+        </Reference>
+    </ItemGroup>
+
+    <ItemGroup>
+        <EmbeddedResource Include="Networking\Mbc\Data\sfera_protocol_schema.json" />
+        <EmbeddedResource Include="Networking\Mbc\Data\sfera_event_names.json" />
+        <EmbeddedResource Include="Networking\Mbc\Data\mbc_recovered_commands.json" />
+    </ItemGroup>
+
+</Project>

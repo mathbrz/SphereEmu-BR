@@ -1,0 +1,97 @@
+using Godot;
+using SphServer.Client;
+using SphServer.Shared.Db;
+using SphServer.Shared.Logger;
+using SphServer.Shared.WorldState;
+
+namespace SphServer.Server.Debug;
+
+/// <summary>
+///     TEMP admin-UI helper: injects a fake connected client so the persona/stats panels
+///     can be exercised without a live game client.
+///     To remove later: delete this file and the <c>AdminDebugDummyClient.TrySpawn</c> call in
+///     <see cref="SphereServer"/>.
+/// </summary>
+public static class AdminDebugDummyClient
+{
+    /// <summary>
+    /// Flip to false (or delete this type) to disable without hunting call sites.
+    /// </summary>
+    public static bool Enabled = true;
+
+    /// <summary>
+    /// Out of the live-client range so the first real player still gets 0x4F6F.
+    /// </summary>
+    public const ushort ClientId = 0xCDEF;
+
+    private const string Login = "knelse1";
+    private const string CharacterName = "Test";
+
+    public static void TrySpawn (Node parent, PackedScene clientScene)
+    {
+        if (!Enabled)
+        {
+            return;
+        }
+
+        try
+        {
+            Spawn (parent, clientScene);
+        }
+        catch (Exception ex)
+        {
+            SphLogger.Error ("AdminDebugDummyClient: spawn failed, continuing without debug character", ex);
+        }
+    }
+
+    private static void Spawn (Node parent, PackedScene clientScene)
+    {
+        var player = DbConnection.Players.Query ()
+            .Include (["$.Characters[*]", "$.Characters[*].Clan"])
+            .Where (x => x.Login == Login)
+            .FirstOrDefault ();
+        if (player is null)
+        {
+            SphLogger.Warning ($"AdminDebugDummyClient: player login \"{Login}\" not found — skip");
+            return;
+        }
+
+        var characterIndex = player.Characters.FindIndex (c => c.Name == CharacterName);
+        if (characterIndex < 0)
+        {
+            SphLogger.Warning (
+                $"AdminDebugDummyClient: character \"{CharacterName}\" not on \"{Login}\" — skip");
+            return;
+        }
+
+        // BsonRef can return a thin stub; the Characters row is reloaded so Items and stats match
+        // LiteDB
+        var characterId = player.Characters[characterIndex].Id;
+        var character = DbConnection.Characters.Query ()
+            .Include (["$.Clan"])
+            .Where (c => c.Id == characterId)
+            .FirstOrDefault ();
+        if (character is null)
+        {
+            SphLogger.Warning (
+                $"AdminDebugDummyClient: Characters id {characterId} missing — skip");
+            return;
+        }
+
+        player.Characters[characterIndex] = character;
+
+        var client = clientScene.Instantiate<SphereClient> ();
+        ActiveClients.InsertAt (ClientId, client);
+        client.SetupAdminDebugDummy (ClientId);
+        client.SetPlayerDbEntry (player);
+        client.SetSelectedCharacterIndex (characterIndex);
+        client.CurrentCharacter?.RecalcCurrentStats ();
+
+        ActiveNodes.Add (client.GetInstanceId (), client);
+        parent.AddChild (client);
+
+        SphLogger.Info (
+            $"AdminDebugDummyClient: spawned {ClientId:X4} as {Login}/{CharacterName} " +
+            $"with {character.Items.Count} item slot(s) (debug only)");
+    }
+}

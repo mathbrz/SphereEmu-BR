@@ -1,0 +1,130 @@
+[gd_scene format=3 uid="uid://csehbdvcwaboh"]
+
+[ext_resource type="Script" uid="uid://c6plta4xgx5uh" path="res://Server/SphereServer.cs" id="2"]
+[ext_resource type="Script" uid="uid://bf5g2twjjlsw3" path="res://Godot/Scripts/Objects/Fill/DoorsFill.cs" id="5_g3owr"]
+[ext_resource type="Script" uid="uid://dlvdb0ui8ktpi" path="res://Godot/Scripts/Objects/Fill/NpcsFill.cs" id="5_npcfill"]
+[ext_resource type="Script" uid="uid://bpvrwmxhbie2y" path="res://Godot/Scripts/Objects/Fill/TeleportsFill.cs" id="5_tpfill"]
+[ext_resource type="Script" uid="uid://dwhnmida3hpi7" path="res://Server/UI/Admin/AdminUiRoot.cs" id="7_adminui"]
+[ext_resource type="Script" uid="uid://dy0pj5pr1a" path="res://Godot/Scripts/Objects/Fill/MonsterSpawnersFill.cs" id="11_mspwn"]
+[ext_resource type="Script" uid="uid://dkxh8kc158k6y" path="res://Godot/Scripts/Objects/Fill/CastleTeleportsFill.cs" id="13_ctfill"]
+[ext_resource type="Script" uid="uid://o2fo352svov1" path="res://Godot/Scripts/Objects/Fill/DungeonEntrancesFill.cs" id="13_denfill"]
+[ext_resource type="Script" uid="uid://bfdwlgm75dpsh" path="res://Godot/Scripts/Objects/Fill/DoorsWithKeyFill.cs" id="13_dwkfill"]
+[ext_resource type="Script" uid="uid://cnp02e7y8v0fs" path="res://Godot/Scripts/Objects/Fill/CastleChestsFill.cs" id="13_hmakr"]
+[ext_resource type="Script" uid="uid://nc7pvchbjtnm" path="res://Godot/Scripts/Objects/Fill/CastleElixirPillarsFill.cs" id="13_ip254"]
+[ext_resource type="Script" uid="uid://ctwk5m8uewbf1" path="res://Godot/Scripts/Objects/Fill/LightCrystalsFill.cs" id="13_lcfill"]
+[ext_resource type="Script" uid="uid://dat57g1st3xts" path="res://Godot/Scripts/Objects/Fill/TeleportBrokenFill.cs" id="13_tbfill"]
+[ext_resource type="Script" uid="uid://s17wkauh3jxy" path="res://Godot/Scripts/Objects/Fill/TeleportWildFill.cs" id="13_twfill"]
+[ext_resource type="Script" uid="uid://dwpyb7kjylf1u" path="res://Godot/Scripts/Objects/Fill/CastleGatesFill.cs" id="13_va0l1"]
+[ext_resource type="Script" uid="uid://dfura17rrwpf2" path="res://Godot/Scripts/Objects/Fill/WorkshopsFill.cs" id="13_wkfill"]
+[ext_resource type="Script" uid="uid://bnmmfdba5ihyx" path="res://Godot/Scripts/Objects/Fill/CastleTabletsFill.cs" id="16_6fo3i"]
+[ext_resource type="Script" uid="uid://4x65gyufdrlp" path="res://Godot/Scripts/Objects/Fill/CastleEntrancesFill.cs" id="34_juwvs"]
+[ext_resource type="PackedScene" uid="uid://cd8g6idrm4k8v" path="res://Godot/Scenes/terrain_scene.scn" id="34_xmlqq"]
+[ext_resource type="Script" uid="uid://b16u1mln1ievd" path="res://Godot/Scripts/Objects/Fill/TeleportDungeonChoiceIslandFill.cs" id="36_dftfill"]
+[ext_resource type="Script" uid="uid://dgx8fpm3ke1of" path="res://Godot/Scripts/Objects/Fill/TeleportInDungeonFill.cs" id="36_nvc8l"]
+[ext_resource type="Script" uid="uid://0arnn5yvq806" path="res://Godot/Scripts/Objects/Fill/TeleportPointFill.cs" id="48_tpfill"]
+[ext_resource type="Script" uid="uid://f5nsf7vo6i3p" path="res://Godot/Scripts/World/WorldChunkStreamer.cs" id="99_wchunk"]
+
+[node name="MainServer" type="Node" unique_id=699851889]
+script = ExtResource("2")
+
+[node name="WorldChunkStreamer" type="Node" parent="." unique_id=2023410656]
+script = ExtResource("99_wchunk")
+LoadRadiusMeters = 200.0
+
+[node name="AdminUi" type="Control" parent="." unique_id=1060658735]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+script = ExtResource("7_adminui")
+
+[node name="Castles" type="Node3D" parent="." unique_id=770123536]
+
+[node name="CastleChests" type="Node3D" parent="Castles" unique_id=198839067]
+script = ExtResource("13_hmakr")
+
+[node name="CastleElixirPillars" type="Node3D" parent="Castles" unique_id=595783747]
+script = ExtResource("13_ip254")
+
+[node name="CastleTablets" type="Node3D" parent="Castles" unique_id=1269721975]
+script = ExtResource("16_6fo3i")
+
+[node name="CastleGates" type="Node3D" parent="Castles" unique_id=84798734]
+script = ExtResource("13_va0l1")
+
+[node name="CastleTeleports" type="Node3D" parent="Castles" unique_id=1100000001]
+script = ExtResource("13_ctfill")
+
+[node name="CastleEntrances" type="Node3D" parent="Castles" unique_id=700863821]
+script = ExtResource("34_juwvs")
+
+[node name="AlchemyMaterialSpawners" type="Node3D" parent="." unique_id=770280678]
+
+[node name="MonsterSpawners" type="Node3D" parent="." unique_id=1827364501]
+script = ExtResource("11_mspwn")
+
+[node name="NPCs" type="Node3D" parent="." unique_id=-1418424086]
+script = ExtResource("5_npcfill")
+
+[node name="Doors" type="Node3D" parent="." unique_id=1682875455]
+script = ExtResource("5_g3owr")
+
+[node name="DoorsWithKey" type="Node3D" parent="." unique_id=1568010309]
+script = ExtResource("13_dwkfill")
+
+[node name="DungeonEntrances" type="Node3D" parent="." unique_id=1811908983]
+script = ExtResource("13_denfill")
+
+[node name="Workshops" type="Node3D" parent="." unique_id=722607339]
+script = ExtResource("13_wkfill")
+
+[node name="ItemsOnGround" type="Node3D" parent="." unique_id=1659553710]
+
+[node name="Resources" type="Node3D" parent="ItemsOnGround" unique_id=827357421]
+
+[node name="LightСrystals" type="Node3D" parent="ItemsOnGround" unique_id=1933487070]
+script = ExtResource("13_lcfill")
+
+[node name="Teleports" type="Node3D" parent="." unique_id=969041823]
+
+[node name="TeleportsRegularTargetTournament" type="Node3D" parent="Teleports" unique_id=188377893]
+script = ExtResource("5_tpfill")
+
+[node name="TeleportsWild" type="Node3D" parent="Teleports" unique_id=1100000002]
+script = ExtResource("13_twfill")
+
+[node name="TeleportsBroken" type="Node3D" parent="Teleports" unique_id=1100000003]
+script = ExtResource("13_tbfill")
+
+[node name="TeleportsInDungeon" type="Node3D" parent="Teleports" unique_id=172428911]
+script = ExtResource("36_nvc8l")
+
+[node name="TeleportsDungeonChoiceIsland" type="Node3D" parent="Teleports" unique_id=634891462]
+script = ExtResource("36_dftfill")
+
+[node name="TeleportPoints" type="Node3D" parent="." unique_id=749616301]
+script = ExtResource("48_tpfill")
+
+[node name="TerrainScene" parent="." unique_id=819193901 instance=ExtResource("34_xmlqq")]
+transform = Transform3D(-4.371139e-08, 0, 1, 0, 1, 0, -1, 0, -4.371139e-08, 1708.8, 0, 1709)
+
+[node name="ObjectVisuals" type="Node3D" parent="." unique_id=1333351098]
+
+[node name="MonsterMultiMeshVisuals" type="Node3D" parent="ObjectVisuals" unique_id=786954089]
+
+[node name="MonsterMM_Кошка" type="Node3D" parent="ObjectVisuals/MonsterMultiMeshVisuals" unique_id=1824849035]
+
+[node name="MonsterMM_Воздушный_лич" type="Node3D" parent="ObjectVisuals/MonsterMultiMeshVisuals" unique_id=1300095827]
+
+[node name="MonsterMM_Ассасин" type="Node3D" parent="ObjectVisuals/MonsterMultiMeshVisuals" unique_id=1651528610]
+
+[node name="MonsterMM_Саламандига" type="Node3D" parent="ObjectVisuals/MonsterMultiMeshVisuals" unique_id=1267027082]
+
+[node name="MonsterMM_Серный_паук" type="Node3D" parent="ObjectVisuals/MonsterMultiMeshVisuals" unique_id=526532001]
+
+[node name="MonsterMM_Паук" type="Node3D" parent="ObjectVisuals/MonsterMultiMeshVisuals" unique_id=1549481853]
+
+[node name="MonsterMM_Огненный_летун" type="Node3D" parent="ObjectVisuals/MonsterMultiMeshVisuals" unique_id=882798835]

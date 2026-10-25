@@ -1,0 +1,155 @@
+﻿using System;
+using System.Collections.Generic;
+using Godot;
+using SphServer.Helpers;
+using SphServer.Server.UI.Admin;
+
+namespace SphServer.Server.UI.ConnectedClients;
+
+public partial class ConnectedClientsPopupUI : PopupMenu
+{
+    private const string KICK_MENU_LABEL = "Kick";
+    private const string BAN_MENU_LABEL = "Ban";
+    public ushort currentClientId;
+
+    public override void _Ready ()
+    {
+        // Kick, Ban, and Teleport are built in code; a saved MainServer.tscn would stack another
+        // copy on every save
+        Clear ();
+        foreach (var child in GetChildren ())
+        {
+            if (child is PopupMenu submenu)
+            {
+                RemoveChild (submenu);
+                submenu.QueueFree ();
+            }
+        }
+
+        AddKickMenuItem ();
+        AddBanMenuItem ();
+        CreateTeleportMenuHierarchy ();
+        IndexPressed += OnMenuIndexPressed;
+    }
+
+    private void AddKickMenuItem ()
+    {
+        AddItem (KICK_MENU_LABEL);
+    }
+
+    private void AddBanMenuItem ()
+    {
+        AddItem (BAN_MENU_LABEL);
+        AddSeparator ();
+    }
+
+    private void OnMenuIndexPressed (long index)
+    {
+        var itemText = GetItemText ((int) index);
+
+        if (itemText == KICK_MENU_LABEL)
+        {
+            HandleKickClient ();
+        }
+        else if (itemText == BAN_MENU_LABEL)
+        {
+            HandleBanClient ();
+        }
+    }
+
+    private void HandleKickClient ()
+    {
+        AdminClientActions.Kick (currentClientId);
+    }
+
+    private void HandleBanClient ()
+    {
+        AdminClientActions.Ban (currentClientId);
+    }
+
+    private void CreateTeleportMenuHierarchy ()
+    {
+        var teleportMenu = new PopupMenu ();
+        teleportMenu.Name = "Teleport";
+
+        foreach (var continent in Enum.GetValues<Continents> ())
+        {
+            var submenu = CreateSubmenuForContinent (continent);
+            submenu.Name = continent.ToString ();
+            teleportMenu.AddSubmenuNodeItem (continent.ToString (), submenu);
+        }
+
+        AddSubmenuNodeItem ("Teleport", teleportMenu);
+    }
+
+    private PopupMenu CreateSubmenuForContinent (Continents continent)
+    {
+        var continentMenu = new PopupMenu ();
+        continentMenu.Name = continent.ToString ();
+        var respawnPoints = new PopupMenu ();
+        respawnPoints.Name = "RespawnPoints";
+
+        var respawnsForContinent = SavedCoords.RespawnPoints.GetValueOrDefault (continent, []);
+
+        foreach (var respawnsForCity in respawnsForContinent)
+        {
+            var cityMenu = new PopupMenu ();
+            cityMenu.Name = respawnsForCity.Key.ToString ();
+            foreach (var respawnPoint in respawnsForCity.Value)
+            {
+                var label = $"{respawnPoint.Key.ToString ()} [{respawnPoint.Value}]";
+                cityMenu.AddItem (label);
+            }
+
+            cityMenu.IndexPressed += GenerateOnIndexPressedForMenu (cityMenu);
+
+            respawnPoints.AddSubmenuNodeItem (respawnsForCity.Key.ToString (), cityMenu);
+        }
+
+        continentMenu.AddSubmenuNodeItem ("Respawn points", respawnPoints);
+
+        var poiForContinent = SavedCoords.TeleportPoints.GetValueOrDefault (continent, []);
+
+        foreach (var poiForCity in poiForContinent)
+        {
+            var poiMenu = new PopupMenu ();
+            poiMenu.Name = poiForCity.Key.ToString ();
+            foreach (var poi in poiForCity.Value)
+            {
+                poiMenu.AddItem ($"{poi.Key} [{poi.Value}]");
+            }
+
+            poiMenu.IndexPressed += GenerateOnIndexPressedForMenu (poiMenu);
+            continentMenu.AddSubmenuNodeItem (poiForCity.Key.ToString (), poiMenu);
+        }
+
+        return continentMenu;
+    }
+
+    // TODO: this is awful and relies on item text, but good enough for now
+    private IndexPressedEventHandler GenerateOnIndexPressedForMenu (PopupMenu popupMenu)
+    {
+        return index =>
+        {
+            var itemText = popupMenu.GetItemText ((int) index);
+
+            if (itemText is null)
+            {
+                return;
+            }
+
+            var coordsString =
+                itemText.Split ('[', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)[1];
+
+            var coordsSplit = coordsString[..^1]
+                .Split (',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            var x = float.Parse (coordsSplit[0]);
+            var y = float.Parse (coordsSplit[1]);
+            var z = float.Parse (coordsSplit[2]);
+            var angle = float.Parse (coordsSplit[3]);
+
+            var worldCoords = new WorldCoords (x, y, z, angle);
+            AdminClientActions.Teleport (currentClientId, worldCoords, itemText);
+        };
+    }
+}

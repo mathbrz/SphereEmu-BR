@@ -1,0 +1,67 @@
+; Engine configuration file.
+; It's best edited using the editor UI and not directly,
+; since the parameters that go here are not all obvious.
+;
+; Format:
+;   [section] ; section goes between []
+;   param=value ; assign values to parameters
+
+config_version=5
+
+[animation]
+
+compatibility/default_parent_skeleton_in_mesh_instance_3d=true
+
+[application]
+
+config/name="SphServer"
+run/main_scene="res://Godot/Scenes/AssetBootstrap.tscn"
+config/features=PackedStringArray("4.7", "C#")
+config/icon="res://icon.png"
+run/max_fps=60
+
+[display]
+
+window/size/viewport_width=1920
+window/size/viewport_height=1080
+window/size/initial_position_type=0
+window/size/initial_position=Vector2i(1600, 300)
+window/vsync/vsync_mode=0
+
+[dotnet]
+
+project/assembly_name="SphServer"
+
+[editor_plugins]
+
+enabled=PackedStringArray("res://addons/world_chunk_streamer/plugin.cfg")
+
+[filesystem]
+
+import/fbx/enabled=false
+
+[layer_names]
+
+3d_physics/layer_1="world_objects"
+3d_physics/layer_2="clients"
+3d_physics/layer_31="empty"
+3d_physics/layer_32="clients_inactive"
+
+[mono]
+
+project/assembly_name="SphServer"
+
+[navigation]
+
+2d/warnings/navmesh_edge_merge_errors=false
+2d/warnings/navmesh_cell_size_mismatch=false
+3d/warnings/navmesh_edge_merge_errors=false
+3d/warnings/navmesh_cell_size_mismatch=false
+
+[physics]
+
+common/enable_pause_aware_picking=true
+
+[rendering]
+
+environment/default_environment="res://default_env.tres"

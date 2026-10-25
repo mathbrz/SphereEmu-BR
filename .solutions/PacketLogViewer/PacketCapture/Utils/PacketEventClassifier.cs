@@ -1,0 +1,232 @@
+using System;
+using System.Text;
+using SphServer.Helpers;
+using SphServer.Helpers.Networking;
+
+namespace PacketLogViewer;
+
+public readonly record struct PacketEventClassification (
+    string EventName,
+    double Confidence,
+    string Reason,
+    bool IsEvent);
+
+internal static class PacketEventClassifier
+{
+    public static PacketEventClassification ClassifyClientFrame (ReadOnlySpan<byte> frame)
+    {
+        var classification = ClientPacketClassifier.ClassifyFrame (frame);
+        return ToPacketEventClassification (classification);
+    }
+
+    public static PacketEventClassification ClassifyServerAck ()
+    {
+        return new PacketEventClassification ("server.protocol.ack", 1.0, "no entity header", true);
+    }
+
+    public static PacketEventClassification ClassifyServerKeepalivePong ()
+    {
+        return new PacketEventClassification (
+            "server.protocol.keepalive.pong",
+            1.0,
+            "PingHandler response to client 0x26 PositionStream keepalive",
+            true);
+    }
+
+    public static PacketEventClassification ClassifyServerCurrentMpUpdatePing ()
+    {
+        return new PacketEventClassification (
+            "server.protocol.ping_current_mp_update",
+            1.0,
+            "0x13 08 C0 42, mp_current at bit 102",
+            true);
+    }
+
+    public static PacketEventClassification ClassifyServerFifteenSecondPing ()
+    {
+        return new PacketEventClassification (
+            "server.protocol.ping_15s",
+            1.0,
+            "CommonPackets.FifteenSecondPing",
+            true);
+    }
+
+    public static PacketEventClassification ClassifyServerCharacterSelectInit ()
+    {
+        return new PacketEventClassification (
+            "server.character_select.init",
+            1.0,
+            "CommonPackets.CharacterSelectStartData",
+            true);
+    }
+
+    public static PacketEventClassification ClassifyServerCharacterListEntry ()
+    {
+        return new PacketEventClassification (
+            "server.character_select.entry",
+            1.0,
+            "0x6C charlist slot (ToCharacterListByteArray / CreateNewCharacterData)",
+            true);
+    }
+
+    public static PacketEventClassification ClassifyServerStatUpdate ()
+    {
+        return new PacketEventClassification (
+            "server.stats.update",
+            1.0,
+            "08C0 stat field stream (NetworkedStatsUpdater)",
+            true);
+    }
+
+    public static PacketEventClassification ClassifyServerMoveEntity ()
+    {
+        return new PacketEventClassification (
+            "server.entity.position",
+            1.0,
+            "server_move_entity (coords then entity_id)",
+            true);
+    }
+
+    public static PacketEventClassification ClassifyFalseBoundary (int reservedLow, bool reservedBit28)
+    {
+        var reservedBit = reservedBit28 ? 1 : 0;
+        return new PacketEventClassification (
+            "server.parser.false_boundary",
+            1.0,
+            $"reserved bits are {reservedLow}/{reservedBit}",
+            false);
+    }
+
+    public static PacketEventClassification ClassifyUnresolvedAction (byte actionType)
+    {
+        return new PacketEventClassification (
+            "server.unresolved_header_candidate",
+            0.15,
+            $"reserved bits match, but action {actionType} is not identified",
+            false);
+    }
+
+    public static PacketEventClassification ClassifyServerEntity (
+        ObjectType objectType,
+        ushort objectTypeVal,
+        EntityActionType actionType,
+        byte actionTypeVal,
+        bool parseSuccess,
+        bool actionRecovered,
+        EntityInteractionType interactionType = EntityInteractionType.UNDEF)
+    {
+        if (objectType == ObjectType.Despawn)
+        {
+            return new PacketEventClassification ("server.entity.despawn", 1.0, "despawn definition", true);
+        }
+
+        if (actionType == EntityActionType.ATTACK
+            || (actionType == EntityActionType.INTERACT && interactionType == EntityInteractionType.DEAL_DAMAGE))
+        {
+            return new PacketEventClassification ("server.combat.damage", 1.0,
+                actionType == EntityActionType.ATTACK
+                    ? "EntityActionType.ATTACK"
+                    : "INTERACT + 0x050D deal-damage",
+                true);
+        }
+
+        if (actionType == EntityActionType.SET_POSITION)
+        {
+            return new PacketEventClassification ("server.entity.position", 1.0, "EntityActionType.SET_POSITION", true);
+        }
+
+        if (actionType == EntityActionType.INTERACT)
+        {
+            if (objectTypeVal == 1)
+            {
+                return new PacketEventClassification (
+                    "server.system.interaction_type_1", 1.0, "object_type=1 action_type=10", true);
+            }
+
+            return new PacketEventClassification (
+                "server.entity.interaction", 0.8, "EntityActionType.INTERACT", true);
+        }
+
+        if (actionType is EntityActionType.FULL_SPAWN or EntityActionType.FULL_SPAWN_2)
+        {
+            var spawnName = objectType == ObjectType.Unknown
+                ? $"server.entity.spawn.object_{objectTypeVal}"
+                : $"server.entity.spawn.{ToSnakeCase (objectType.ToString ())}";
+            var confidence = parseSuccess ? 1.0 : actionRecovered ? 0.95 : 0.5;
+            var reason = actionRecovered
+                ? "action recovered from raw header"
+                : parseSuccess
+                    ? "confirmed by existing PacketParts comment"
+                    : "full spawn with partial definition";
+            return new PacketEventClassification (spawnName, confidence, reason, true);
+        }
+
+        if (actionType == EntityActionType.UNKNOWN)
+        {
+            return new PacketEventClassification (
+                "server.entity.state_variant", 0.5, "EntityActionType.UNKNOWN (0x14)", true);
+        }
+
+        if (actionType == EntityActionType.UNDEF)
+        {
+            return ClassifyUnresolvedAction (actionTypeVal);
+        }
+
+        return new PacketEventClassification (
+            "server.protocol_or_payload", 0.25, "no entity header", false);
+    }
+
+    public static PacketTypes? ToPacketType (string eventName)
+    {
+        return eventName switch
+        {
+            "client.position_keepalive" => PacketTypes.CLIENT_PING,
+            "client.character_select" => PacketTypes.CLIENT_SELECT_CHARACTER,
+            "client.chat.send" => PacketTypes.CLIENT_SEND_CHAT_MESSAGE,
+            "client.combat.damage_and_send_animation" => PacketTypes.CLIENT_ATTACK_TARGET,
+            "client.combat.damage_target" => PacketTypes.CLIENT_ATTACK_TARGET,
+            "client.item.move" => PacketTypes.CLIENT_MOVE_ITEM,
+            "client.stats.update.request" => PacketTypes.CLIENT_STATS_UPDATE_REQUEST,
+            "server.protocol.ack" => PacketTypes.SERVER_CONNECTION_ACCEPTED,
+            "server.protocol.keepalive.pong" => PacketTypes.SERVER_KEEPALIVE_PONG,
+            "server.protocol.keepalive_pong" => PacketTypes.SERVER_KEEPALIVE_PONG,
+            "server.protocol.ping_6s" => PacketTypes.SERVER_PING_6_SEC,
+            "server.protocol.ping_current_mp_update" => PacketTypes.SERVER_CURRENT_MP_UPDATE_PING,
+            "server.protocol.ping_15s" => PacketTypes.SERVER_PING_15_SEC,
+            "server.character_select.init" => PacketTypes.SERVER_CHARACTER_SELECT_SCREEN_INIT,
+            "server.character_select.entry" => PacketTypes.SERVER_CHARACTER_SELECT_SCREEN_CONTENTS,
+            "server.stats.update" => PacketTypes.SERVER_STAT_UPDATE,
+            "server.entity.despawn" => PacketTypes.SERVER_DESPAWN_ENTITY,
+            "server.entity.position" => PacketTypes.SERVER_MOVE_ENTITY,
+            _ when eventName.StartsWith ("server.entity.spawn.", StringComparison.Ordinal)
+                => PacketTypes.SERVER_NEW_OBJECT,
+            _ => null
+        };
+    }
+
+    private static PacketEventClassification ToPacketEventClassification (
+        ClientPacketClassification classification) =>
+        new (classification.EventName, classification.Confidence, classification.Reason, classification.IsEvent);
+
+    private static string ToSnakeCase (string name)
+    {
+        if (string.IsNullOrEmpty (name))
+        {
+            return name;
+        }
+
+        var sb = new StringBuilder (name.Length + 8);
+        for (var i = 0; i < name.Length; i++)
+        {
+            var c = name[i];
+            if (char.IsUpper (c) && i > 0)
+            {
+                sb.Append ('_');
+            }
+
+            sb.Append (char.ToLowerInvariant (c));
+        }
+
+        return sb.ToString ();
+    }
+}

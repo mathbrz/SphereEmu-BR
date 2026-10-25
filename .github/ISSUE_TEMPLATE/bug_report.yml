@@ -1,0 +1,39 @@
+name: Bug report
+description: Something behaves wrongly in the server
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please remove any account data (logins, passwords, chat) from what you paste.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Server log lines around it
+      description: From `logs/server_*.log`, with the time. Remove account data first.
+      render: text
+  - type: input
+    id: version
+    attributes:
+      label: Version (commit or release) and client date
+  - type: dropdown
+    id: retail
+    attributes:
+      label: Does the official server behave differently?
+      options:
+        - I do not know
+        - Yes, the official server does it right
+        - No, same as the official server

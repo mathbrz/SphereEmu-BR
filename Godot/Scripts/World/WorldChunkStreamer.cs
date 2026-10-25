@@ -1,0 +1,164 @@
+using System;
+using System.Collections.Generic;
+using Godot;
+using SphServer.Client;
+using SphServer.Server.Config;
+using SphServer.Shared.WorldState;
+using SphServer.Sphere.Game.WorldObject;
+
+namespace SphServer.Godot.Scripts.World;
+
+/// <summary>
+/// Chunks stay loaded once requested
+/// </summary>
+[Tool]
+public partial class WorldChunkStreamer : Node
+{
+    private readonly HashSet<(WorldContentKind Kind, int TileX, int TileZ)> loaded = [];
+    private WorldContentIndex? index;
+    private Node? mainServerRoot;
+    private bool loadAllRequested;
+
+    [Export]
+    public float LoadRadiusMeters { get; set; }
+
+    [Export]
+    public bool AutoLoadAroundClients { get; set; } = true;
+
+    public int LoadedChunkCount => loaded.Count;
+
+    public override void _Ready ()
+    {
+        if (LoadRadiusMeters <= 0f)
+        {
+            LoadRadiusMeters = 200f;
+            try
+            {
+                if (!Engine.IsEditorHint ())
+                {
+                    LoadRadiusMeters = ServerConfig.AppConfig.ObjectVisibilityDistance * 2f;
+                }
+            }
+            catch
+            {
+                // Config may be unavailable in some tool contexts.
+            }
+        }
+
+        index = WorldContentIndex.GetOrLoad ();
+        mainServerRoot = FindMainServerRoot ();
+
+        if (!Engine.IsEditorHint ())
+        {
+            SeedBakedWorldObjectIds (index);
+        }
+
+        if (!Engine.IsEditorHint () && WorldChunkLaunchArgs.WantsLoadAllWorldChunks ())
+        {
+            GD.Print ("WorldChunkStreamer: --load-all-world-chunks — loading all placement chunks at startup.");
+            LoadAll ();
+        }
+    }
+
+    public void EnsureAroundWorldPosition (Vector3 worldPosition)
+    {
+        if (index is null || mainServerRoot is null)
+        {
+            return;
+        }
+
+        WorldChunkLoadOps.EnsureAround (
+            mainServerRoot,
+            index,
+            loaded,
+            worldPosition,
+            LoadRadiusMeters,
+            assignEditorOwner: false);
+    }
+
+    public void EnsureChunkLoaded (WorldContentKind kind, int tileX, int tileZ)
+    {
+        mainServerRoot ??= FindMainServerRoot ();
+        if (mainServerRoot is null)
+        {
+            return;
+        }
+
+        WorldChunkLoadOps.EnsureChunkLoaded (
+            mainServerRoot,
+            loaded,
+            kind,
+            tileX,
+            tileZ,
+            assignEditorOwner: false);
+    }
+
+    public int LoadAll ()
+    {
+        loadAllRequested = true;
+        index ??= WorldContentIndex.GetOrLoad ();
+        mainServerRoot ??= FindMainServerRoot ();
+        if (mainServerRoot is null)
+        {
+            return 0;
+        }
+
+        var count = WorldChunkLoadOps.LoadAll (mainServerRoot, index, loaded, assignEditorOwner: false);
+        GD.Print ($"WorldChunkStreamer: LoadAll loaded {count} chunk(s), total={loaded.Count}");
+        return count;
+    }
+
+    public void NotifyClientPosition (SphereClient client)
+    {
+        if (!AutoLoadAroundClients || Engine.IsEditorHint () || loadAllRequested)
+        {
+            return;
+        }
+
+        if (client.CurrentCharacter is null)
+        {
+            return;
+        }
+
+        EnsureAroundWorldPosition (ClientWorldPosition.GetGodotWorldPosition (client));
+    }
+
+    public void CheckAllClients ()
+    {
+        if (!AutoLoadAroundClients || Engine.IsEditorHint () || loadAllRequested)
+        {
+            return;
+        }
+
+        foreach (var client in ActiveClients.GetAll ().Values)
+        {
+            NotifyClientPosition (client);
+        }
+    }
+
+    /// <summary>
+    /// Placement names end in _{ID} (see WorldObject.CompactDuplicatedIdNameSuffix), so the resident
+    /// index covers chunks that are not loaded yet
+    /// </summary>
+    private static void SeedBakedWorldObjectIds (WorldContentIndex contentIndex)
+    {
+        var ids = new HashSet<ushort> ();
+        foreach (var entry in contentIndex.Entries)
+        {
+            var name = entry.NodeName;
+            var separator = name.LastIndexOf ('_');
+            if (separator >= 0 && ushort.TryParse (name.AsSpan (separator + 1), out var id) && id != 0)
+            {
+                ids.Add (id);
+            }
+        }
+
+        WorldObjectIndex.SeedBaked (ids);
+        GD.Print ($"WorldChunkStreamer: kept {ids.Count} baked world object id(s) out of runtime allocation");
+    }
+
+    private Node? FindMainServerRoot ()
+    {
+        return GetParent () ?? GetTree ()?.CurrentScene;
+    }
+}

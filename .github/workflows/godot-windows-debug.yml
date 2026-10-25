@@ -1,0 +1,350 @@
+name: Godot Windows Debug
+
+on:
+  push:
+    branches: [__disabled__]
+  workflow_dispatch:
+
+concurrency:
+  group: godot-windows-debug-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GODOT_VERSION: "4.7.1"
+  EXPORT_PRESET: "Windows Desktop Slim"
+  EXPORT_DIR: build/windows-debug
+  PACKS_DIR: build/packs
+  ASSET_BUNDLES_TAG: asset-bundles
+  SLIM_RELEASE_TAG: windows-debug-slim
+  # Godot Windows player + embedded slim PCK should be tens of MB; tiny zips are runtime_data-only failures.
+  MIN_SLIM_EXE_BYTES: "20000000"
+
+jobs:
+  export-windows-debug:
+    name: Export Windows Debug Slim
+    runs-on: windows-latest
+    permissions:
+      actions: write
+      contents: write
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      # SDK version comes from repo-root global.json (same pin as local `dotnet`).
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - name: Setup Godot (.NET + templates)
+        uses: chickensoft-games/setup-godot@v2
+        with:
+          version: ${{ env.GODOT_VERSION }}
+          use-dotnet: true
+          include-templates: true
+          cache: true
+
+      - name: Verify toolchain
+        run: |
+          dotnet --version
+          godot --version
+
+      - name: Generate .NET bindings
+        run: godot --headless --path . --build-solutions --quit-after 20
+        continue-on-error: true
+
+      - name: Restore and build C#
+        run: |
+          dotnet restore SphServer.csproj
+          dotnet build SphServer.csproj --configuration Debug --no-restore
+
+      # Editor plugins can hang/crash headless import/export on CI.
+      - name: Disable editor plugins for CI export
+        run: |
+          $path = 'project.godot'
+          $text = Get-Content -LiteralPath $path -Raw
+          $updated = [regex]::Replace(
+            $text,
+            '(?m)^enabled=PackedStringArray\([^\)]*\)',
+            'enabled=PackedStringArray()'
+          )
+          if ($updated -eq $text) {
+            Write-Warning 'editor_plugins enabled= line not found/changed'
+          }
+          Set-Content -LiteralPath $path -Value $updated -NoNewline -Encoding utf8
+
+      - name: Cache Godot import (.godot)
+        uses: actions/cache@v4
+        with:
+          path: .godot
+          key: godot-import-${{ runner.os }}-${{ env.GODOT_VERSION }}-${{ hashFiles('export_presets.cfg', 'Godot/Textures/**/*.import', 'Godot/Models/**/*.import', 'Godot/Terrain/**/*.import') }}
+          restore-keys: |
+            godot-import-${{ runner.os }}-${{ env.GODOT_VERSION }}-
+
+      - name: Publish changed heavy asset packs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GODOT: ${{ env.GODOT }}
+          GODOT4: ${{ env.GODOT4 }}
+        run: |
+          $godot = if ($env:GODOT4) { $env:GODOT4 } elseif ($env:GODOT) { $env:GODOT } else { 'godot' }
+          Write-Host "Using Godot at: $godot"
+          ./Tools/asset_packs/Publish-AssetPacks.ps1 `
+            -Godot $godot `
+            -PacksOutDir $env:PACKS_DIR `
+            -ReleaseTag $env:ASSET_BUNDLES_TAG
+
+      - name: Export slim debug build
+        run: |
+          New-Item -ItemType Directory -Force -Path $env:EXPORT_DIR | Out-Null
+          $out = Join-Path $env:EXPORT_DIR "SphServer.exe"
+          $log = Join-Path $env:EXPORT_DIR "export-slim.log"
+
+          # Prefer setup-godot's real exe; PATH "godot" can be a shim that breaks under pipelines.
+          $godot = if ($env:GODOT4 -and (Test-Path -LiteralPath $env:GODOT4)) { $env:GODOT4 }
+            elseif ($env:GODOT -and (Test-Path -LiteralPath $env:GODOT)) { $env:GODOT }
+            else { (Get-Command godot -ErrorAction Stop).Source }
+          Write-Host "Using Godot at: $godot"
+
+          # Avoid PowerShell pipelines ("Cannot run a document in the middle of a pipeline").
+          $psi = [System.Diagnostics.ProcessStartInfo]::new()
+          $psi.FileName = $godot
+          $psi.UseShellExecute = $false
+          $psi.RedirectStandardOutput = $true
+          $psi.RedirectStandardError = $true
+          $psi.CreateNoWindow = $true
+          foreach ($a in @('--headless', '--path', '.', '--export-debug', $env:EXPORT_PRESET, $out)) {
+            [void]$psi.ArgumentList.Add([string]$a)
+          }
+          $proc = [System.Diagnostics.Process]::new()
+          $proc.StartInfo = $psi
+          [void]$proc.Start()
+          $outTask = $proc.StandardOutput.ReadToEndAsync()
+          $errTask = $proc.StandardError.ReadToEndAsync()
+          $proc.WaitForExit()
+          $combined = @($outTask.GetAwaiter().GetResult(), $errTask.GetAwaiter().GetResult()) -join "`n"
+          Set-Content -LiteralPath $log -Value $combined -Encoding utf8
+          if ($combined) { Write-Host $combined }
+          $code = [int]$proc.ExitCode
+          $proc.Dispose()
+
+          Write-Host "export-debug exit=$code"
+          Get-ChildItem -LiteralPath $env:EXPORT_DIR -Force |
+            Select-Object Name, Length |
+            Format-Table -AutoSize |
+            Out-String |
+            Write-Host
+
+          if (-not (Test-Path -LiteralPath $out)) {
+            throw "Export did not create $out (exit=$code). See $log"
+          }
+          $size = (Get-Item -LiteralPath $out).Length
+          $min = [int64]$env:MIN_SLIM_EXE_BYTES
+          if ($size -lt $min) {
+            throw "SphServer.exe is only $size bytes (min $min). Export likely failed; see $log"
+          }
+          Write-Host ("OK SphServer.exe size={0:N1} MB" -f ($size / 1MB))
+
+      - name: Copy runtime_data into build
+        run: ./Tools/asset_packs/Copy-RuntimeData.ps1 -ExportDir $env:EXPORT_DIR
+
+      - name: Write build-info.json
+        run: |
+          $sha = $env:GITHUB_SHA
+          $short = $sha.Substring(0, 12)
+          $tag = "master-$short"
+          $message = (git log -1 --pretty=%s $sha).Trim()
+          if ([string]::IsNullOrWhiteSpace($message)) { $message = "(no commit message)" }
+          $committedAt = (git show -s --format=%cI $sha).Trim()
+          $builtAt = [DateTimeOffset]::UtcNow.ToString('o')
+          $info = [ordered]@{
+            sha           = $sha
+            shortSha      = $short
+            tag           = $tag
+            message       = $message
+            committedAt   = $committedAt
+            builtAt       = $builtAt
+            channelTipTag = $env:SLIM_RELEASE_TAG
+          }
+          $path = Join-Path $env:EXPORT_DIR 'build-info.json'
+          ($info | ConvertTo-Json -Depth 5) | Set-Content -LiteralPath $path -Encoding utf8
+          Write-Host "Wrote $path"
+          Get-Content -LiteralPath $path
+
+          ./Tools/asset_packs/Write-FileManifest.ps1 `
+            -ExportDir $env:EXPORT_DIR `
+            -Sha $sha `
+            -Tag $tag
+
+      - name: Upload slim artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SphServer-windows-debug-slim-${{ github.sha }}
+          path: ${{ env.EXPORT_DIR }}
+          if-no-files-found: error
+          include-hidden-files: true
+
+      - name: Publish slim build to releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tipTag = $env:SLIM_RELEASE_TAG
+          $sha = $env:GITHUB_SHA
+          $short = $sha.Substring(0, 12)
+          $masterTag = "master-$short"
+          $zipName = "SphServer-windows-debug-slim.zip"
+          $infoName = "build-info.json"
+          $manifestName = "file-manifest.json"
+          $zipPath = Join-Path (Split-Path $env:EXPORT_DIR -Parent) $zipName
+          $infoPath = Join-Path $env:EXPORT_DIR $infoName
+          $manifestPath = Join-Path $env:EXPORT_DIR $manifestName
+
+          $message = (git log -1 --pretty=%s $sha).Trim()
+          if ([string]::IsNullOrWhiteSpace($message)) { $message = "(no commit message)" }
+
+          # Exclude the export log from the playable zip.
+          $log = Join-Path $env:EXPORT_DIR "export-slim.log"
+          $logTmp = $null
+          if (Test-Path -LiteralPath $log) {
+            $logTmp = Join-Path ([System.IO.Path]::GetTempPath()) "export-slim-$([guid]::NewGuid()).log"
+            Move-Item -LiteralPath $log -Destination $logTmp -Force
+          }
+
+          # Compress-Archive skips hidden items (.generated); ZipFile includes them.
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          if (Test-Path -LiteralPath $zipPath) { Remove-Item -LiteralPath $zipPath -Force }
+          try {
+            [System.IO.Compression.ZipFile]::CreateFromDirectory(
+              (Resolve-Path -LiteralPath $env:EXPORT_DIR).Path,
+              $zipPath
+            )
+          }
+          finally {
+            if ($logTmp -and (Test-Path -LiteralPath $logTmp)) {
+              Move-Item -LiteralPath $logTmp -Destination $log -Force
+            }
+          }
+
+          $slimTitle = 'Windows debug slim (playable)'
+          $slimNotes = @(
+            'Playable slim Godot server build (tip of master).'
+            ''
+            "Current commit: $sha"
+            $message
+            ''
+            'Heavy packs download automatically on first launch from the asset-bundles CDN.'
+            'Historical builds are published as prerelease tags master-<shortSha> (last 20 kept).'
+          ) -join "`n"
+
+          gh release view $tipTag 2>$null | Out-Null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $tipTag `
+              --title $slimTitle `
+              --notes $slimNotes `
+              --latest
+          }
+          else {
+            gh release edit $tipTag --title $slimTitle --notes $slimNotes --latest
+          }
+
+          Write-Host "Uploading tip assets to $tipTag (sha=$sha)"
+          gh release upload $tipTag $zipPath $infoPath $manifestPath --clobber
+
+          # Per-commit prerelease for version picker / pin (does not become Latest).
+          gh release view $masterTag 2>$null | Out-Null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $masterTag `
+              --title $message `
+              --notes "Prerelease slim build for $sha`n`n$message" `
+              --prerelease `
+              --target $sha
+          }
+          else {
+            gh release edit $masterTag --title $message --notes "Prerelease slim build for $sha`n`n$message" --prerelease
+          }
+
+          Write-Host "Uploading pin assets to $masterTag"
+          gh release upload $masterTag $zipPath $infoPath $manifestPath --clobber
+
+      - name: Prune old master-* prereleases
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const KEEP = 20;
+            const prefix = 'master-';
+            const releases = await github.paginate(
+              github.rest.repos.listReleases,
+              {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                per_page: 100,
+              }
+            );
+
+            const builds = releases
+              .filter((r) => r?.prerelease && r?.tag_name?.startsWith(prefix))
+              .sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at));
+
+            const toDelete = builds.slice(KEEP);
+            for (const release of toDelete) {
+              core.info(`Deleting release ${release.tag_name} (${release.id})`);
+              await github.rest.repos.deleteRelease({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                release_id: release.id,
+              });
+              try {
+                await github.rest.git.deleteRef({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  ref: `tags/${release.tag_name}`,
+                });
+              } catch (e) {
+                core.warning(`Tag delete ${release.tag_name}: ${e.message}`);
+              }
+            }
+
+            core.info(
+              `master-* prereleases: kept ${Math.min(builds.length, KEEP)}, deleted ${toDelete.length}`
+            );
+
+      - name: Prune old slim artifacts
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const KEEP = 20;
+            const prefix = 'SphServer-windows-debug-slim-';
+            // paginate already unwraps { artifacts: [...] } into an item array;
+            // do not use response.data.artifacts in a map fn (that is undefined).
+            const artifacts = await github.paginate(
+              github.rest.actions.listArtifactsForRepo,
+              {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                per_page: 100,
+              }
+            );
+
+            const builds = artifacts
+              .filter((a) => a?.name?.startsWith(prefix) && !a.expired)
+              .sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at));
+
+            const toDelete = builds.slice(KEEP);
+            for (const artifact of toDelete) {
+              core.info(`Deleting ${artifact.name} (${artifact.id})`);
+              await github.rest.actions.deleteArtifact({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                artifact_id: artifact.id,
+              });
+            }
+
+            core.info(
+              `Slim artifacts: kept ${Math.min(builds.length, KEEP)}, deleted ${toDelete.length}`
+            );

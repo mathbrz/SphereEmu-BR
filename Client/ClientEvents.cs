@@ -1,0 +1,65 @@
+using System;
+using System.Collections.Generic;
+using System.Threading.Tasks;
+using SphServer.Client.EventHandlers;
+using SphServer.Client.Networking.Handlers.InGame.DamageHealEffects;
+using SphServer.Client.Networking.Handlers.InGame.Items;
+
+namespace SphServer.Client;
+
+public class ClientEvents (SphereClient sphereClient)
+{
+    private readonly Queue<ClientQueuedEvent> eventQueue = new ();
+    private CurrentClientPositionChangedEventHandler? currentClientPositionChangedEventHandler;
+    private EntityPositionUpdateEventHandler? entityPositionUpdateEventHandler;
+    private CombatHitEventHandler? combatHitEventHandler;
+    private ChangeCharacterHealthHandler? changeCharacterHealthHandler;
+
+    public void Enqueue (ClientQueuedEvent clientEvent)
+    {
+        eventQueue.Enqueue (clientEvent);
+    }
+
+    public void InitEventHandlers ()
+    {
+        currentClientPositionChangedEventHandler ??= new CurrentClientPositionChangedEventHandler (sphereClient);
+        entityPositionUpdateEventHandler ??= new EntityPositionUpdateEventHandler (sphereClient);
+        combatHitEventHandler ??= new CombatHitEventHandler (sphereClient);
+        changeCharacterHealthHandler ??= new ChangeCharacterHealthHandler (sphereClient);
+    }
+
+    public async Task HandleEventsAsync ()
+    {
+        InitEventHandlers ();
+        while (eventQueue.Count > 0)
+        {
+            await DispatchAsync (eventQueue.Dequeue ()).ConfigureAwait (false);
+        }
+    }
+
+    private async Task DispatchAsync (ClientQueuedEvent clientEvent)
+    {
+        switch (clientEvent)
+        {
+            case CurrentClientPositionChangedEvent e:
+                await currentClientPositionChangedEventHandler!.HandleAsync (e).ConfigureAwait (false);
+                break;
+            case EntityPositionUpdateEvent e:
+                await entityPositionUpdateEventHandler!.HandleAsync (e).ConfigureAwait (false);
+                break;
+            case CombatHitEvent e:
+                await combatHitEventHandler!.HandleAsync (e).ConfigureAwait (false);
+                break;
+            case CharacterHealthChangeEvent e:
+                await changeCharacterHealthHandler!.HandleAsync (e).ConfigureAwait (false);
+                break;
+            case ItemSpentEvent e:
+                ItemConsumption.ConsumeOne (sphereClient, e.Item);
+                break;
+            default:
+                throw new ArgumentOutOfRangeException (
+                    nameof (clientEvent),
+                    $"Unhandled client event type: {clientEvent.GetType ().Name}.");
+        }
+    }
+}

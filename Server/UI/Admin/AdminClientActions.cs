@@ -1,0 +1,559 @@
+using SphServer.Client;
+using SphServer.Client.Networking.GameplayLogic.Stats;
+using SphServer.Helpers;
+using SphServer.Packets;
+using SphServer.Server.Config;
+using SphServer.Shared.BitStream;
+using SphServer.Shared.Db;
+using SphServer.Shared.Db.DataModels;
+using SphServer.Shared.Networking;
+using SphServer.Shared.Networking.DataModel.Serializers;
+using SphServer.Shared.WorldState;
+
+namespace SphServer.Server.UI.Admin;
+
+/// <summary>
+/// Kick, ban, teleport, reset, and inventory move
+/// </summary>
+public static class AdminClientActions
+{
+    public static bool Kick(ushort clientId)
+    {
+        var client = ActiveClients.Get(clientId);
+        if (client is null)
+        {
+            return false;
+        }
+
+        AdminActionLog.Info(client, "kicked");
+        client.RemoveClient();
+        return true;
+    }
+
+    public static bool Ban(ushort clientId)
+    {
+        var client = ActiveClients.Get(clientId);
+        if (client is null)
+        {
+            return false;
+        }
+
+        var login = client.GetLogin();
+        var ipAddress = client.GetIpAddressWithoutPort();
+        if (string.IsNullOrEmpty(login))
+        {
+            AdminActionLog.Warning(client, "ban failed (login is null)");
+            return false;
+        }
+
+        AdminActionLog.Info(client, $"banned (login {login})");
+        BannedClients.BanClient(login, ipAddress);
+        client.RemoveClient();
+        return true;
+    }
+
+    public static bool Teleport(ushort clientId, WorldCoords worldCoords, string destinationLabel)
+    {
+        var client = ActiveClients.Get(clientId);
+        if (client is null || client.CurrentCharacter is null)
+        {
+            return false;
+        }
+
+        AdminActionLog.Info(client, $"teleported to [{worldCoords}] via \"{destinationLabel}\"");
+        var teleportPacket =
+            new CharacterDbEntrySerializer(client.CurrentCharacter).GetTeleportByteArray(worldCoords);
+        client.MaybeQueueNetworkPacketSend(teleportPacket);
+        client.GrantRespawnProtection ();
+        return true;
+    }
+
+    public static bool ResetCharacter(ushort clientId)
+    {
+        var client = ActiveClients.Get(clientId);
+        var character = client?.CurrentCharacter;
+        if (client is null || character is null)
+        {
+            return false;
+        }
+
+        var occupied = character.Items.Keys.ToList();
+        character.ResetToNewCharacterDefaults();
+
+        foreach (var slot in occupied)
+        {
+            var reserve = ItemSlotReserve.Build(character.ClientIndex, slot, ItemSlotReserve.NoItem);
+            if (reserve is not null)
+            {
+                client.MaybeQueueNetworkPacketSend(reserve);
+            }
+        }
+
+        NetworkedStatsUpdater.Update(character);
+        client.SaveCharacter();
+        AdminActionLog.Info(client, "reset character to new-character defaults");
+        return true;
+    }
+
+    public static bool SetMoney(ushort clientId, int money)
+    {
+        var client = ActiveClients.Get(clientId);
+        var character = client?.CurrentCharacter;
+        if (client is null || character is null)
+        {
+            return false;
+        }
+
+        if (character.Money == money)
+        {
+            return true;
+        }
+
+        var old = character.Money;
+        character.Money = money;
+        client.MaybeQueueNetworkPacketSend(CommonPackets.BuildPlayerMoney(character.ClientIndex, money));
+        NetworkedStatsUpdater.Update(character);
+        client.SaveCharacter();
+        AdminActionLog.Info(client, $"set money from {old} to {money}");
+        return true;
+    }
+
+    public static bool SetKarmaCount(ushort clientId, int karmaCount)
+    {
+        var client = ActiveClients.Get(clientId);
+        var character = client?.CurrentCharacter;
+        if (client is null || character is null)
+        {
+            return false;
+        }
+
+        var old = character.KarmaCount;
+        character.SetKarmaCount(karmaCount);
+        if (character.KarmaCount == old)
+        {
+            return true;
+        }
+
+        NetworkedStatsUpdater.Update(character);
+        client.SaveCharacter();
+        AdminActionLog.Info(client, $"set karma from {old} to {character.KarmaCount}");
+        return true;
+    }
+
+    public static bool SetCurrentHp(ushort clientId, int currentHp)
+    {
+        var client = ActiveClients.Get(clientId);
+        var character = client?.CurrentCharacter;
+        if (client is null || character is null)
+        {
+            return false;
+        }
+
+        var clamped = (ushort)Math.Clamp(currentHp, 0, character.MaxHP);
+        if (character.CurrentHP == clamped)
+        {
+            return true;
+        }
+
+        var old = character.CurrentHP;
+        var delta = clamped - old;
+        // The handler applies HP from the queued delta, so CurrentHP is left alone
+        client.BroadcastApplyHpDelta(delta);
+        AdminActionLog.Info(client, $"set current HP from {old} to {clamped} (max {character.MaxHP}, delta {delta})");
+        return true;
+    }
+
+    public static bool SetCurrentMp(ushort clientId, int currentMp)
+    {
+        var client = ActiveClients.Get(clientId);
+        var character = client?.CurrentCharacter;
+        if (client is null || character is null)
+        {
+            return false;
+        }
+
+        var clamped = (ushort)Math.Clamp(currentMp, 0, character.MaxMP);
+        if (character.CurrentMP == clamped)
+        {
+            return true;
+        }
+
+        var old = character.CurrentMP;
+        character.CurrentMP = clamped;
+        NetworkedStatsUpdater.Update(character);
+        client.SaveCharacter();
+        AdminActionLog.Info(client, $"set current MP from {old} to {clamped} (max {character.MaxMP})");
+        return true;
+    }
+
+    public static bool SetClanRank(ushort clientId, ClanRank rank)
+    {
+        var client = ActiveClients.Get(clientId);
+        var character = client?.CurrentCharacter;
+        if (client is null || character is null)
+        {
+            return false;
+        }
+
+        if (character.Clan is null || character.Clan.Id == ClanDbEntry.DefaultClanDbEntry.Id)
+        {
+            return false;
+        }
+
+        if (character.ClanRank == rank)
+        {
+            return true;
+        }
+
+        var old = character.ClanRank;
+        character.ClanRank = rank;
+        NetworkedStatsUpdater.Update(character);
+        client.BroadcastClanRefreshToVisibleClients();
+        client.SaveCharacter();
+        AdminActionLog.Info(client, $"set clan rank from {old} to {rank}");
+        return true;
+    }
+
+    public static bool SetGuild(ushort clientId, Guild guild, int rankMinusOne)
+    {
+        var client = ActiveClients.Get(clientId);
+        var character = client?.CurrentCharacter;
+        if (client is null || character is null)
+        {
+            return false;
+        }
+
+        bool ok;
+        if (guild == Guild.None)
+        {
+            rankMinusOne = 0;
+            ok = character.Items.ContainsKey(BelongingSlot.Guild)
+                ? ClearSlotItem(clientId, BelongingSlot.Guild)
+                : ApplyGuildFields(client, character, Guild.None, 0);
+        }
+        else
+        {
+            rankMinusOne = Math.Clamp(rankMinusOne, 0, (int)GuildRank.Expert);
+            if (!GuildCatalog.TryGetMembershipGameId(guild, rankMinusOne, out var gameId))
+            {
+                return false;
+            }
+
+            // Guild is set before the item packets: the sheet reads in_spec from i21 and shows "?"
+            // if the emblem is not there yet
+            if (!ApplyGuildFields(client, character, guild, rankMinusOne))
+            {
+                return false;
+            }
+
+            if (WornMembershipGameId(character) != gameId
+                && !ReplaceSlotItem(clientId, BelongingSlot.Guild, gameId, ItemSuffix.None))
+            {
+                return false;
+            }
+
+            ok = true;
+        }
+
+        SyncGuildAbilities(client, character, persist: true);
+        character.RecalcCurrentStats();
+        NetworkedStatsUpdater.Update(character);
+        return ok;
+    }
+
+    public static bool ClearSlotItem(ushort clientId, BelongingSlot slot)
+    {
+        var client = ActiveClients.Get(clientId);
+        var character = client?.CurrentCharacter;
+        if (client is null || character is null || !character.Items.TryGetValue(slot, out var itemId))
+        {
+            return false;
+        }
+
+        var lookBefore = CharacterWornLook.Capture(character);
+        character.Items.Remove(slot);
+        DbConnection.Items.Delete(itemId);
+        SendSlotBinding(client, character.ClientIndex, slot, item: null);
+        MaybeSyncGuildFromSlot(client, character, slot);
+        FinishItemMutation(client, character, lookBefore);
+        AdminActionLog.Info(client, $"cleared [{slot}] (item {itemId})");
+        return true;
+    }
+
+    // count_if_present in new_item_reserve_slot_full is 8 bits
+    public const int MaxItemCount = 255;
+
+    /// <summary>
+    /// Puts a new item into the first empty bag cell
+    /// </summary>
+    public static bool GiveItem (ushort clientId, int gameId, ItemSuffix suffix, int count)
+    {
+        var client = ActiveClients.Get (clientId);
+        var slot = client?.CurrentCharacter?.FindEmptyInventorySlot ();
+        if (client is null || slot is null)
+        {
+            if (client is not null)
+            {
+                AdminActionLog.Warning (client, $"give game id {gameId} failed (inventory is full)");
+            }
+
+            return false;
+        }
+
+        return ReplaceSlotItem (clientId, slot.Value, gameId, suffix, count);
+    }
+
+    public static bool ReplaceSlotItem (ushort clientId, BelongingSlot slot, int gameId, ItemSuffix suffix,
+        int count = 1)
+    {
+        var client = ActiveClients.Get(clientId);
+        var character = client?.CurrentCharacter;
+        if (client is null || character is null
+            || !SphObjectDb.GameObjectDataDb.TryGetValue(gameId, out var catalog))
+        {
+            return false;
+        }
+
+        var lookBefore = CharacterWornLook.Capture(character);
+        if (character.Items.TryGetValue(slot, out var oldId))
+        {
+            character.Items.Remove(slot);
+            DbConnection.Items.Delete(oldId);
+            SendSlotBinding(client, character.ClientIndex, slot, item: null);
+        }
+
+        var go = SphGameObject.CreateFromGameObject(catalog);
+        go.Suffix = suffix;
+        var item = ItemDbEntry.CreateFromGameObject(go);
+        item.ItemCount = ItemDbEntry.IsInventorySlot (slot) ? Math.Clamp (count, 1, MaxItemCount) : 1;
+        item.Id = WorldObjectIndex.NewItem();
+        DbConnection.SaveItem(item);
+        character.PlaceItemInSlot(slot, item.Id);
+
+        var reserve = ItemSlotReserve.Build(character.ClientIndex, slot, item.Id, item.ItemCount);
+        if (reserve is not null)
+        {
+            client.MaybeQueueNetworkPacketSend(reserve);
+        }
+
+        client.MaybeQueueNetworkPacketSend(ItemRecordEncoder.Encode(item,
+            SphBitStream.ByteSwap(character.ClientIndex)));
+
+        MaybeSyncGuildFromSlot(client, character, slot);
+        FinishItemMutation(client, character, lookBefore);
+        AdminActionLog.Info (client, $"set [{slot}] to game id {gameId} suffix {suffix} count {item.ItemCount}");
+        return true;
+    }
+
+    /// <summary>
+    /// Wearing also requires CanUseItem; a swap needs both directions
+    /// </summary>
+    public static bool CanMoveOrSwapItem(ushort clientId, BelongingSlot from, BelongingSlot to)
+    {
+        if (from == to)
+        {
+            return false;
+        }
+
+        var character = ActiveClients.Get(clientId)?.CurrentCharacter;
+        if (character is null
+            || !character.Items.TryGetValue(from, out var fromId)
+            || DbConnection.Items.FindById(fromId) is not { } fromItem
+            || !MayGoIn(character, fromItem, to))
+        {
+            return false;
+        }
+
+        if (!character.Items.TryGetValue(to, out var toId))
+        {
+            return true;
+        }
+
+        return DbConnection.Items.FindById(toId) is { } toItem && MayGoIn(character, toItem, from);
+    }
+
+    public static bool TryMoveOrSwapItem(ushort clientId, BelongingSlot from, BelongingSlot to)
+    {
+        if (!CanMoveOrSwapItem(clientId, from, to))
+        {
+            return false;
+        }
+
+        var client = ActiveClients.Get(clientId);
+        var character = client?.CurrentCharacter;
+        if (client is null || character is null
+            || !character.Items.TryGetValue(from, out var fromId)
+            || DbConnection.Items.FindById(fromId) is not { } fromItem)
+        {
+            return false;
+        }
+
+        var lookBefore = CharacterWornLook.Capture(character);
+        if (character.Items.TryGetValue(to, out var toId)
+            && DbConnection.Items.FindById(toId) is { } toItem)
+        {
+            character.Items[from] = toId;
+            character.Items[to] = fromId;
+            SendSlotBinding(client, character.ClientIndex, from, toItem);
+            SendSlotBinding(client, character.ClientIndex, to, fromItem);
+            AdminActionLog.Info(client, $"swapped [{from}] <-> [{to}]");
+        }
+        else
+        {
+            character.Items[to] = fromId;
+            character.Items.Remove(from);
+            SendSlotBinding(client, character.ClientIndex, from, item: null);
+            SendSlotBinding(client, character.ClientIndex, to, fromItem);
+            AdminActionLog.Info(client, $"moved [{from}] -> [{to}]");
+        }
+
+        MaybeSyncGuildFromSlot(client, character, from, to);
+        FinishItemMutation(client, character, lookBefore);
+        return true;
+    }
+
+    /// <summary>
+    /// Persona moves to the first empty bag cell; inventory wears the first matching slot, swapping
+    /// if it is occupied
+    /// </summary>
+    public static bool TryDoubleClickSlot(ushort clientId, BelongingSlot slot)
+    {
+        var character = ActiveClients.Get(clientId)?.CurrentCharacter;
+        if (character is null
+            || !character.Items.TryGetValue(slot, out var itemId)
+            || DbConnection.Items.FindById(itemId) is not { } item)
+        {
+            return false;
+        }
+
+        var to = ItemDbEntry.IsInventorySlot(slot)
+            ? WearSlotFor(character, item)
+            : character.FindEmptyInventorySlot();
+        return to is not null && TryMoveOrSwapItem(clientId, slot, to.Value);
+    }
+
+    /// <summary>
+    /// First empty wear slot this item fits, else the first occupied one (swap).
+    /// </summary>
+    private static BelongingSlot? WearSlotFor(CharacterDbEntry character, ItemDbEntry item)
+    {
+        BelongingSlot? fallback = null;
+        foreach (var slot in Enum.GetValues<BelongingSlot>())
+        {
+            if (ItemDbEntry.IsInventorySlot(slot) || !item.IsValidForSlot(slot))
+            {
+                continue;
+            }
+
+            if (!character.Items.ContainsKey(slot))
+            {
+                return slot;
+            }
+
+            fallback ??= slot;
+        }
+
+        return fallback;
+    }
+
+    private static bool MayGoIn(CharacterDbEntry character, ItemDbEntry item, BelongingSlot slot)
+    {
+        if (!item.IsValidForSlot(slot))
+        {
+            return false;
+        }
+
+        return ItemDbEntry.IsInventorySlot(slot) || character.CanUseItem(item);
+    }
+
+    private static bool ApplyGuildFields(SphereClient client, CharacterDbEntry character,
+        Guild guild, int rankMinusOne)
+    {
+        var oldGuild = character.Guild;
+        var oldRank = character.GuildLevelMinusOne;
+        if (oldGuild == guild && oldRank == rankMinusOne)
+        {
+            return true;
+        }
+
+        character.Guild = guild;
+        character.GuildLevelMinusOne = rankMinusOne;
+        character.RecalcCurrentStats();
+        client.SaveCharacter();
+        AdminActionLog.Info(client,
+            $"set guild from {oldGuild} rank {oldRank} to {guild} rank {character.GuildLevelMinusOne}");
+        return true;
+    }
+
+    private static int? WornMembershipGameId(CharacterDbEntry character)
+    {
+        if (!character.Items.TryGetValue(BelongingSlot.Guild, out var itemId)
+            || DbConnection.Items.FindById(itemId) is not { GameObjectType: GameObjectType.Guild } item)
+        {
+            return null;
+        }
+
+        return item.GameId;
+    }
+
+    private static void MaybeSyncGuildFromSlot(SphereClient client, CharacterDbEntry character,
+        params BelongingSlot[] slots)
+    {
+        if (!slots.Contains(BelongingSlot.Guild))
+        {
+            return;
+        }
+
+        if (character.SyncGuildFromWornEmblem())
+        {
+            AdminActionLog.Info(client,
+                $"set guild to {character.Guild} rank {character.GuildLevelMinusOne} from [{BelongingSlot.Guild}]");
+        }
+
+        SyncGuildAbilities(client, character, persist: false);
+    }
+
+    private static void SyncGuildAbilities(SphereClient client, CharacterDbEntry character, bool persist)
+    {
+        if (!GuildAbilityLoadout.Sync(character, client.MaybeQueueNetworkPacketSend))
+        {
+            return;
+        }
+
+        if (character.RecalcCurrentStats())
+        {
+            NetworkedStatsUpdater.Update(character);
+        }
+
+        if (persist)
+        {
+            client.SaveCharacter();
+        }
+    }
+
+    private static void FinishItemMutation(SphereClient client, CharacterDbEntry character,
+        CharacterWornLook.Snapshot lookBefore)
+    {
+        character.RecalcCurrentStats();
+        // Guild emblem, max HP, and nameplate can change without a stats-changed flag
+        NetworkedStatsUpdater.Update(character);
+        client.SaveCharacter();
+
+        if (lookBefore != CharacterWornLook.Capture(character))
+        {
+            client.BroadcastAppearanceRefreshToVisibleClients();
+        }
+    }
+
+    private static void SendSlotBinding(SphereClient client, ushort clientIndex,
+        BelongingSlot slot, ItemDbEntry? item)
+    {
+        var packet = item is null
+            ? ItemSlotReserve.Build(clientIndex, slot, ItemSlotReserve.NoItem)
+            : ItemSlotReserve.Build(clientIndex, slot, item.Id, item.ItemCount);
+        if (packet is not null)
+        {
+            client.MaybeQueueNetworkPacketSend(packet);
+        }
+    }
+}

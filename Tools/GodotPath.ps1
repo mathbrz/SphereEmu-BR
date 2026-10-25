@@ -1,0 +1,81 @@
+$ToolsDir = $PSScriptRoot
+$LocalConfig = Join-Path $ToolsDir "godot.local.ps1"
+if (Test-Path -LiteralPath $LocalConfig) {
+    . $LocalConfig
+}
+
+function Find-GodotExecutable {
+    $searchRoots = @(
+        "D:\Games\Godot",
+        "D:\Download\Old\SphEmuPackage\Godot",
+        "$env:LOCALAPPDATA\Programs\Godot",
+        "$env:ProgramFiles\Godot",
+        "${env:ProgramFiles(x86)}\Godot"
+    )
+
+    $candidates = @()
+    foreach ($root in $searchRoots) {
+        if (-not (Test-Path -LiteralPath $root)) {
+            continue
+        }
+
+        # Versioned installs live in subfolders (e.g. D:\Games\Godot\4.7.1\...).
+        $candidates += Get-ChildItem -Path $root -Filter "Godot*.exe" -File -Recurse -Depth 3 -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -notmatch '_console\.exe$' -and $_.Name -match 'mono' }
+    }
+
+    if ($candidates.Count -eq 0) {
+        return $null
+    }
+
+    # Prefer newest 4.7.x, then any 4.x mono build by name descending.
+    $preferred = $candidates | Where-Object { $_.Name -match '4\.7' } | Sort-Object Name -Descending | Select-Object -First 1
+    if ($preferred) {
+        return $preferred.FullName
+    }
+
+    return ($candidates | Sort-Object Name -Descending | Select-Object -First 1).FullName
+}
+
+function Resolve-GodotExecutable {
+    if ($env:GODOT_PATH) {
+        if (Test-Path -LiteralPath $env:GODOT_PATH) {
+            return (Resolve-Path -LiteralPath $env:GODOT_PATH).Path
+        }
+
+        Write-Warning "GODOT_PATH is set but file not found (ignoring): $env:GODOT_PATH"
+    }
+
+    $cmd = Get-Command godot -ErrorAction SilentlyContinue
+    if ($cmd) {
+        return $cmd.Source
+    }
+
+    $discovered = Find-GodotExecutable
+    if ($discovered) {
+        return (Resolve-Path -LiteralPath $discovered).Path
+    }
+
+    $exampleConfig = Join-Path $ToolsDir "godot.local.ps1.example"
+    throw @"
+Godot executable not found.
+
+Quick fix (current PowerShell session):
+  `$env:GODOT_PATH = 'D:\Games\Godot\4.7.1\Godot_v4.7.1-stable_mono_win64.exe'
+
+Permanent fix:
+  [System.Environment]::SetEnvironmentVariable('GODOT_PATH', 'D:\Games\Godot\4.7.1\Godot_v4.7.1-stable_mono_win64.exe', 'User')
+  Then restart the terminal.
+
+Or copy and edit local config:
+  copy '$exampleConfig' '$LocalConfig'
+
+Note: running GodotPath.ps1 by itself does nothing useful. Dot-source it from bake scripts.
+"@
+}
+
+if ($MyInvocation.InvocationName -ne '.') {
+    Write-Host "Resolve-GodotExecutable is loaded by bake scripts via dot-sourcing."
+    Write-Host "Testing resolution..."
+    Write-Host (Resolve-GodotExecutable)
+}
