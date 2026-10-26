@@ -5,6 +5,7 @@ using SphServer.Client.State;
 using SphServer.Server.Broadcast;
 using SphServer.Server.Config;
 using SphServer.Server.Debug.Parser;
+using SphServer.Server.GameplayLogic;
 using SphServer.Shared.Db;
 using SphServer.Shared.GameData.Enums;
 using SphServer.Shared.Db.DataModels;
@@ -653,6 +654,16 @@ public partial class SphereClient : WorldObject
 		// Same process id as the client position stream
 		var selfId = SphBitStream.ByteSwap (CurrentCharacter.ClientIndex);
 		CurrentCharacter.CurrentHP = respawnHp;
+
+		// Retail revives in the nearest city, also after a death inside a castle
+		if (ServerConfig.AppConfig.RespawnAtCity)
+		{
+			var city = DeathRules.NearestCityRespawn (CurrentCharacter);
+			CurrentCharacter.X = city.x;
+			CurrentCharacter.Y = -city.y;
+			CurrentCharacter.Z = -city.z;
+			CurrentCharacter.Angle = city.turn;
+		}
 
 		var x = (float) CurrentCharacter.X;
 		var y = (float) -CurrentCharacter.Y;

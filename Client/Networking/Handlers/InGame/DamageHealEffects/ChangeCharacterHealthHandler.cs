@@ -4,6 +4,8 @@ using SphereHelpers.Extensions;
 using SphServer.Client.Networking.GameplayLogic.Stats;
 using SphServer.Helpers;
 using SphServer.Packets;
+using SphServer.Server.Config;
+using SphServer.Server.GameplayLogic;
 using SphServer.Shared.BitStream;
 using SphServer.Shared.GameData.Enums;
 using SphServer.Shared.ClientEvents;
@@ -95,7 +97,12 @@ public sealed class ChangeCharacterHealthHandler(SphereClient sphereClient) : IC
         if (becameDead)
         {
             sphereClient.DisarmUnderwaterBreath ();
-            sphereClient.SchedulePlayerRespawn ();
+            if (DeathRules.ApplyExperienceLoss (character, ServerConfig.AppConfig.DeathExperienceLossPercent))
+            {
+                NetworkedStatsUpdater.Update (character, refreshPeers: false);
+            }
+
+            sphereClient.SchedulePlayerRespawn (ServerConfig.AppConfig.RespawnDelaySeconds);
         }
 
         sphereClient.SaveCharacter();

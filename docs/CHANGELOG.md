@@ -6,6 +6,7 @@ What has been done, newest first. The list of what comes next is in [ROADMAP.md]
 ## 2026-10-25
 
 ### Added
+- Death rules from the official server, both configurable in `appsettings.json`: the revive comes 8.3 s after the death hit with 100 hp in the nearest city (`RespawnDelaySeconds`, `RespawnAtCity`), and `DeathExperienceLossPercent` takes that percent of title and degree experience (off by default, retail looked like 5.75 percent for one level 31 character). Not tried in game yet.
 - Splitting a stack into an empty cell of a bag or a book, with the answer copied from the official server. Verified.
 - Splitting a stack in the inventory cells. Verified. Custom: the official answer for these cells was not captured.
 - Joining any counted item (stones, powders, herbs), not only mantras. Verified.

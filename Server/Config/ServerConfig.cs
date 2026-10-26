@@ -27,8 +27,15 @@ public class AppConfig
     /// </summary>
     public bool AllowSelfAttack { get; init; }
 
-    /// <summary>Seconds a dead player waits before being revived at a respawn point.</summary>
-    public float RespawnDelaySeconds { get; init; } = 10f;
+    /// <summary>Seconds from the death hit until the player is revived (retail: 8.3 s, measured twice).</summary>
+    public float RespawnDelaySeconds { get; init; } = 8.3f;
+
+    /// <summary>Revive in the nearest city, as retail does, instead of where the player died.</summary>
+    public bool RespawnAtCity { get; init; } = true;
+
+    /// <summary>Percent of title and degree experience lost on death. Retail: about 5.75 (one level 31 character, two
+    /// deaths), so it is off by default until more levels confirm it. 0 means no loss.</summary>
+    public float DeathExperienceLossPercent { get; init; }
 
     /// <summary>Account logins allowed to use GM commands, separated by commas. Empty means nobody.</summary>
     public string GmAccounts { get; init; } = string.Empty;
@@ -195,7 +202,10 @@ public static class ServerConfig
                 CityProtectionRadiusMeters =
                     FileFormatCulture.ParseFloat(configDict.GetValueOrDefault("CityProtectionRadiusMeters", "150.0")),
                 RespawnDelaySeconds =
-                    FileFormatCulture.ParseFloat(configDict.GetValueOrDefault("RespawnDelaySeconds", "10.0")),
+                    FileFormatCulture.ParseFloat(configDict.GetValueOrDefault("RespawnDelaySeconds", "8.3")),
+                RespawnAtCity = bool.Parse(configDict.GetValueOrDefault("RespawnAtCity", "true")),
+                DeathExperienceLossPercent =
+                    FileFormatCulture.ParseFloat(configDict.GetValueOrDefault("DeathExperienceLossPercent", "0.0")),
                 ObjectVisibilityDistance =
                     FileFormatCulture.ParseFloat(configDict.GetValueOrDefault("ObjectVisibilityDistance", "100.0")),
                 ReceiveBufferSize = FileFormatCulture.ParseInt(configDict.GetValueOrDefault("ReceiveBufferSize", "1024")),
@@ -336,7 +346,9 @@ public static class ServerConfig
             ["LogPath"] = @"logs\server.log",
             ["DebugMode"] = "true",
             ["AllowSelfAttack"] = "false",
-            ["RespawnDelaySeconds"] = "10.0",
+            ["RespawnDelaySeconds"] = "8.3",
+            ["RespawnAtCity"] = "true",
+            ["DeathExperienceLossPercent"] = "0.0",
             ["GmAccounts"] = "",
             ["GmAccountBootstrap"] = "false",
             ["MobChaseEnabled"] = "false",

@@ -15,8 +15,8 @@ A maintainer may reorder this list; change it with a pull request like any other
 
 | Issue | What | Why now |
 |---|---|---|
-| [#4](https://github.com/mathbrz/SphereEmu-BR/issues/4) | Respawn 8.3 s after the death hit, with 100 hp, in the nearest city | Measured twice, the same both times. Upstream revives in place after 5 s |
-| [#3](https://github.com/mathbrz/SphereEmu-BR/issues/3) | Dying costs about 5.75 percent of title and degree experience | Measured twice, same ratio. Make it configurable |
+| [#4](https://github.com/mathbrz/SphereEmu-BR/issues/4) | Respawn 8.3 s after the death hit, with 100 hp, in the nearest city | Measured twice, the same both times. Upstream revives in place after 5 s (built, needs a test in game) |
+| [#3](https://github.com/mathbrz/SphereEmu-BR/issues/3) | Dying costs about 5.75 percent of title and degree experience | Measured twice, same ratio. Make it configurable (built, off by default, needs a test and more levels) |
 | [#5](https://github.com/mathbrz/SphereEmu-BR/issues/5) | A city kills a monster that chases a player into it (hp 1, effect 320) | Seen with two different monsters |
 
 ### P2: matters, needs more data or work
@@ -49,6 +49,8 @@ A maintainer may reorder this list; change it with a pull request like any other
 Implemented, but nobody has checked it against the original or in a long session yet. Tick it in a pull request that
 fixes or confirms it.
 
+- [ ] Respawn: 8.3 s after the death hit, hp 100, in the nearest city (try deaths near different cities and with bad karma).
+- [ ] `DeathExperienceLossPercent` set to 5.75 takes about that share of title and degree experience.
 - [ ] The healing mantra sends the "ready again" message when its use time ends (no visible change is expected, and no
   client error should appear).
 - [ ] Splitting a stack in the inventory cells with items other than mantras and powders.
