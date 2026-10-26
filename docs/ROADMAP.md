@@ -32,7 +32,7 @@ A maintainer may reorder this list; change it with a pull request like any other
 
 | Issue | What | Waiting for |
 |---|---|---|
-| [#8](https://github.com/mathbrz/SphereEmu-BR/issues/8) | Missions: generate from the form, reward, dungeon entrance | More samples of the reward by place, participants and level |
+| [#8](https://github.com/mathbrz/SphereEmu-BR/issues/8) | Missions: generate from the form, reward, dungeon entrance | More samples of the reward by place, participants and level (open: how the form maps to the reward, see the issue) |
 | [#10](https://github.com/mathbrz/SphereEmu-BR/issues/10) | Trade between players | A capture of a finished trade with a second player |
 | [#12](https://github.com/mathbrz/SphereEmu-BR/issues/12) | Switch character without closing the game | A quick test of what the client does on a closed connection |
 
