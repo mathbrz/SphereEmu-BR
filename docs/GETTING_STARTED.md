@@ -143,7 +143,7 @@ Every GM command is logged in `logs/server_*.log` with the player name.
 ## Settings worth knowing
 
 All in `appsettings.json`. The comments in the file explain each one. The common ones: `Port`, `DebugMode`,
-`GmAccounts`, `GmAccountBootstrap`, `AllowSelfAttack`, `MobChaseEnabled`, `CityMonsterProtection`, `Spawn_Money`.
+`GmAccounts`, `GmAccountBootstrap`, `AllowSelfAttack`, `MobChaseEnabled`, `CityMonsterProtection`, `Spawn_Money`, `RespawnDelaySeconds` (default 8.3), `RespawnAtCity` (default true) and `DeathExperienceLossPercent` (default 0, off; retail looked like 5.75). A key you do not write keeps its default.
 
 ## Problems
 
