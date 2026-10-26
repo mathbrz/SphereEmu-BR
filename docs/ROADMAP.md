@@ -35,7 +35,6 @@ A maintainer may reorder this list; change it with a pull request like any other
 | [#8](https://github.com/mathbrz/SphereEmu-BR/issues/8) | Missions: generate from the form, reward, dungeon entrance | More samples of the reward by place, participants and level |
 | [#10](https://github.com/mathbrz/SphereEmu-BR/issues/10) | Trade between players | A capture of a finished trade with a second player |
 | [#12](https://github.com/mathbrz/SphereEmu-BR/issues/12) | Switch character without closing the game | A quick test of what the client does on a closed connection |
-| [#13](https://github.com/mathbrz/SphereEmu-BR/issues/13) | Italian guides | A translator (good first issue) |
 
 ### Also known, not filed yet
 
@@ -65,4 +64,3 @@ fixes or confirms it.
   The most useful: a finished mission with its reward, the distance a monster chases, items dropped by monsters of several
   levels, and a finished trade with another player.
 - **Test and report** on the issue tracker with the template for retail behaviour.
-- **Translate** the guides (Italian is missing).
