@@ -4,6 +4,20 @@ This repository is a community fork of **SphereEmu** by Andrey Klyuev (GitHub: [
 licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 (CC BY-NC-SA 4.0): credit is required, use must stay non-commercial, and changes must keep the same license. The original author and contributors keep their copyright; see [LICENSE.md](../LICENSE.md).
 
 - Upstream: https://github.com/knelse/SphereEmu
+
+## Credits
+
+The work this fork stands on, as the upstream maintainer credits it in his changelog:
+
+- **knelse**: the server emulator, the protocol work, the world, monsters, items and most of the tools.
+- **vpopus**: reading the game's world files (99 percent of the work of the world import into Godot, in the maintainer's words).
+- **Goethe**: the packet event recognition in the packet viewer and the protocol catalog behind it.
+- **Barahlush**: the working inventory with stat calculation, the weapon damage calculation and the rewrite of the client packet parsing.
+
+Thanks to all of them. If you know of someone who should be listed, say so in an issue.
+
+## Synchronisation
+
 - Last synchronised with upstream commit `b88f5fd21` (2026-10-21), "Сервер не ждёт вертикальную синхронизацию монитора (#67)".
   The fork started from `5bc45556d` (2026-09-21) and was brought up to that commit with a three-way merge. The history of
   this repository starts as a snapshot (the original history contains large game assets that are not redistributed
