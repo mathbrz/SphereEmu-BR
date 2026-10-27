@@ -5,8 +5,9 @@
 ![Not for profit](https://img.shields.io/badge/fan%20project-not%20for%20profit-blue.svg)
 
 A community server emulator for **Sphere** (the old Russian MMORPG), built to behave like the original, with every
-behaviour backed by evidence from the original game. It is a fork of [knelse/SphereEmu](https://github.com/knelse/SphereEmu)
-(CC BY-NC-SA 4.0), written in C# on Godot 4.7 Mono and run headless.
+behaviour backed by evidence from the original game. It continues [knelse/SphereEmu](https://github.com/knelse/SphereEmu)
+(CC BY-NC-SA 4.0) from commit `b88f5fd` and is maintained on its own: nothing here needs the original repository at run
+time. Written in C# on Godot 4.7 Mono and run headless.
 
 > **Fan project, not for profit, not affiliated with the owners of Sphere.** This repository holds **code only**.
 > No game file (client, models, textures, data) is stored here. See [DISCLAIMER.md](DISCLAIMER.md).

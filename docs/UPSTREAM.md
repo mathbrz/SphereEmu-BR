@@ -16,23 +16,22 @@ The work this fork stands on, as the upstream maintainer credits it in his chang
 
 Thanks to all of them. If you know of someone who should be listed, say so in an issue.
 
-## Synchronisation
+## Independence
 
-- Last synchronised with upstream commit `b88f5fd21` (2026-10-21), "Сервер не ждёт вертикальную синхронизацию монитора (#67)".
-  The fork started from `5bc45556d` (2026-09-21) and was brought up to that commit with a three-way merge. The history of
-  this repository starts as a snapshot (the original history contains large game assets that are not redistributed
-  here), so later upstream changes are read and ported or merged by file, not by branch.
+This repository continues the original code from commit `b88f5fd21` (2026-10-21), "Сервер не ждёт вертикальную синхронизацию монитора (#67)",
+and is maintained on its own. The original project is moving to a new network protocol and to closed development, so this
+repository does not follow it and no longer depends on it:
 
-To see what upstream did since our base:
+- The server never contacts the original repository at run time. The self-updater of the original project is off unless you
+  set `SPHEREEMU_UPDATER=1`, and its release feed points at this repository, which publishes none.
+- The only thing taken from the original repository is the set of game files, once, by `Tools/setup-assets.ps1`. If that
+  repository is gone or private, point the script at a full clone you hold with `-Source` (see
+  [GETTING_STARTED.md](GETTING_STARTED.md)). Making the game files from the player's own client is on the
+  [roadmap](ROADMAP.md).
+- The history of this repository starts as a snapshot, because the original history holds large game files that are not
+  redistributed here.
 
-```bash
-git remote add upstream https://github.com/knelse/SphereEmu.git
-git fetch upstream
-git diff -w --ignore-cr-at-eol b88f5fd21 upstream/master -- <path>
-```
-
-Fixes that are not specific to this community are offered back to upstream as pull requests
-(see the introduction in knelse/SphereEmu#75).
+The fork started from `5bc45556d` (2026-09-21) and was brought up to that commit with a three-way merge.
 
 ## Reported to upstream (2026-10-25)
 
