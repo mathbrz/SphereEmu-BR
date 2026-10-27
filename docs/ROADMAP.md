@@ -15,6 +15,7 @@ A maintainer may reorder this list; change it with a pull request like any other
 
 | Issue | What | Why now |
 |---|---|---|
+| [#22](https://github.com/mathbrz/SphereEmu-BR/issues/22) | Build the game files from the player's own client | The original repository, the only source of the converted game files, is closing. Newcomers cannot get them without this |
 | [#4](https://github.com/mathbrz/SphereEmu-BR/issues/4) | Respawn 8.3 s after the death hit, with 100 hp, in the nearest city | Measured twice, the same both times. Upstream revives in place after 5 s |
 | [#3](https://github.com/mathbrz/SphereEmu-BR/issues/3) | Dying costs about 5.75 percent of title and degree experience | Measured twice, same ratio. Make it configurable |
 | [#5](https://github.com/mathbrz/SphereEmu-BR/issues/5) | A city kills a monster that chases a player into it (hp 1, effect 320) | Seen with two different monsters |
