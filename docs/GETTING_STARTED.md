@@ -35,7 +35,7 @@ The script downloads about 3.8 GB from the original project's public repository 
 this code is based on, and places `Godot/Models`, `Godot/Textures`, `Godot/Terrain`, `Godot/World`,
 `Sphere.GameDataDecode`, `.generated` and `sphereclient_patched.exe` next to `Server/` and `Client/`.
 This project hosts none of these files. Do not commit them: the `.gitignore` already keeps them out. If the
-original repository ever disappears, the script stops working; keep a copy of what it downloaded.
+original repository ever disappears or becomes private, the script cannot reach it. Keep a full clone of it (`git clone --mirror`) or a copy of what the script downloaded, and point the script at that copy with `-Source <path or URL>` (the environment variable `SPHEREEMU_ASSETS_SOURCE` does the same). Once the files are in place the server never needs that repository again.
 
 The first time the server runs, Godot imports the models and textures, which can take several minutes.
 

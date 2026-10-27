@@ -1,11 +1,13 @@
-# Fetches the game files the server needs to run from the original project's PUBLIC repository
-# (https://github.com/knelse/SphereEmu) at the commit this code is based on, and puts them in this repository.
-# Nothing here is hosted by this project. Run it once from the repository root:
-#   powershell -ExecutionPolicy Bypass -File Tools\setup-assets.ps1
-# Needs: git. Downloads about 3.8 GB. Re-running skips what is already there unless -Force is given.
+# Puts the game files the server needs to run next to the code, taken from a full clone of the original project's
+# repository (https://github.com/knelse/SphereEmu) at the commit this code is based on.
+# Nothing here is hosted by this project, and the server does not need that repository once the files are in place.
+# The default source is that repository. If it is gone or private, point -Source (or the SPHEREEMU_ASSETS_SOURCE
+# environment variable) at any full clone you hold, as a path or a URL. Run it once from the repository root:
+#   powershell -ExecutionPolicy Bypass -File Tools\setup-assets.ps1 [-Source <path or URL>]
+# Needs: git. Takes about 3.8 GB. Re-running skips what is already there unless -Force is given.
 param(
     [string]$Commit = 'b88f5fd2184d03eedd6b9a69a43654083c5cdbd1',
-    [string]$Source = 'https://github.com/knelse/SphereEmu.git',
+    [string]$Source = $(if ($env:SPHEREEMU_ASSETS_SOURCE) { $env:SPHEREEMU_ASSETS_SOURCE } else { 'https://github.com/knelse/SphereEmu.git' }),
     [switch]$Force
 )
 $ErrorActionPreference = 'Stop'
@@ -41,9 +43,15 @@ try {
     git sparse-checkout init --no-cone
     $patterns = $missing | ForEach-Object { '/' + $_ + $(if ($_ -like '*.exe' -or $_ -like '*.gdignore') { '' } else { '/' }) }
     git sparse-checkout set --no-cone @patterns
-    Write-Host 'Downloading from the original repository (this takes a while)...'
+    Write-Host "Fetching from $Source (this takes a while)..."
     git fetch --depth 1 --filter=blob:none origin $Commit
+    if ($LASTEXITCODE -ne 0) {
+        throw "Could not fetch commit $Commit from $Source. If that repository is gone or private, run again with " +
+              "-Source <path or URL of a full clone you hold> (or set SPHEREEMU_ASSETS_SOURCE). " +
+              "A plain clone made with 'git clone --mirror' before it closed works."
+    }
     git -c advice.detachedHead=false checkout FETCH_HEAD
+    if ($LASTEXITCODE -ne 0) { throw 'Checkout of the game files failed.' }
 } finally {
     Pop-Location
 }

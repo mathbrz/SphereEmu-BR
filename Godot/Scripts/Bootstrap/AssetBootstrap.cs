@@ -8,14 +8,16 @@ using IoFileAccess = global::System.IO.FileAccess;
 namespace SphServer.Godot.Scripts.Bootstrap;
 
 /// <summary>
-/// Exported builds update then enter MainServer; the editor and a full project tree skip downloads
+/// Exported builds can update then enter MainServer; the editor, a full project tree and any run where the updater is
+/// not switched on (SPHEREEMU_UPDATER=1) skip downloads and go straight to MainServer. This repository does not publish
+/// builds or game files, so by default nothing here contacts a network
 /// </summary>
 public partial class AssetBootstrap : Control
 {
 	private const string MainServerScene = "res://Godot/Scenes/MainServer.tscn";
 	private const string DefaultReleaseBaseUrl =
-		"https://github.com/knelse/SphereEmu/releases/download/asset-bundles";
-	private const string DefaultGithubRepo = "knelse/SphereEmu";
+		"https://github.com/mathbrz/SphereEmu-BR/releases/download/asset-bundles";
+	private const string DefaultGithubRepo = "mathbrz/SphereEmu-BR";
 	private const string DefaultTipTag = "windows-debug-slim";
 	private const string SlimZipName = "SphServer-windows-debug-slim.zip";
 
@@ -191,7 +193,7 @@ public partial class AssetBootstrap : Control
 
 		try
 		{
-			if (OS.HasFeature ("editor") || HasProjectModelsOnRes ())
+			if (OS.HasFeature ("editor") || HasProjectModelsOnRes () || !UpdaterEnabled ())
 			{
 				SetStatus ("Dev project detected — loading MainServer…");
 				await ToSignal (GetTree (), SceneTree.SignalName.ProcessFrame);
@@ -796,6 +798,12 @@ public partial class AssetBootstrap : Control
 			throw new InvalidOperationException ($"ChangeSceneToFile({MainServerScene}) failed: {err}");
 		}
 	}
+
+	/// <summary>
+	/// The updater only runs when asked for: it needs a release feed, and this repository publishes none
+	/// </summary>
+	private static bool UpdaterEnabled () =>
+		global::System.Environment.GetEnvironmentVariable ("SPHEREEMU_UPDATER") == "1";
 
 	private static bool HasProjectModelsOnRes ()
 	{
