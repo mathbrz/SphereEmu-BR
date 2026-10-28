@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using SphServer.Helpers;
 using SphServer.Shared.Db.DataModels;
 
@@ -59,14 +60,22 @@ public static class DeathRules
             return new WorldCoords (character.X, -character.Y, pz, character.Angle);
         }
 
+        // The inherited table lists the Arena as the bad-karma spot of Sunpool (a long standing error of the original
+        // project), so a point equal to the Arena is not trusted and the city centre is used instead
         if (SavedCoords.RespawnPoints.TryGetValue (bestContinent, out var byCity) &&
-            byCity.TryGetValue (bestCity, out var byKarma) && byKarma.TryGetValue (character.Karma, out var known))
+            byCity.TryGetValue (bestCity, out var byKarma) && byKarma.TryGetValue (character.Karma, out var known) &&
+            !IsArena (known))
         {
             return known;
         }
 
         return bestCity == Cities.Торвил ? TorwelRespawn : best;
     }
+
+    private static bool IsArena (WorldCoords point) =>
+        SavedCoords.TeleportPoints.Values.Any (byType => byType.TryGetValue (PoiType.Other, out var other) &&
+                                                         other.TryGetValue ("Арена", out var arena) &&
+                                                         Math.Abs (arena.x - point.x) < 1 && Math.Abs (arena.z - point.z) < 1);
 
     /// <summary>
     ///     Takes the configured percent of the title and degree experience. Returns whether anything changed so the
