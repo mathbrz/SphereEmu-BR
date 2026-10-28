@@ -66,8 +66,9 @@ Every pull request is checked against [docs/PR_REVIEW_CHECKLIST.md](docs/PR_REVI
 Include: what you did, what you expected, what happened, the server log lines around it (`logs/server_*.log`), and
 the time. A short description of the character (level, items) helps. Remove any account data first.
 
-## Staying in sync with upstream
+## The original project
 
-Maintainers read what the original project did through its own remote (see [docs/UPSTREAM.md](docs/UPSTREAM.md)), port the changes
-they want in a separate branch (this repository does not share history with it, so they are ported, not merged), build,
-test, and only then open a pull request into `develop`. Fixes that are not specific to this community should also be sent upstream as pull requests.
+This repository is maintained on its own and does not follow the original project any more: that project is moving to a
+new protocol and to closed development, and nothing here needs it at run time (see [docs/UPSTREAM.md](docs/UPSTREAM.md)).
+Work goes through pull requests into `develop` here. If you think a finding would help the original maintainers, tell a
+maintainer of this repository and share it as a description, not as a pull request, unless they ask for one.

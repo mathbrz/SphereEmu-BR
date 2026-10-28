@@ -15,6 +15,7 @@ A maintainer may reorder this list; change it with a pull request like any other
 
 | Issue | What | Why now |
 |---|---|---|
+| [#22](https://github.com/mathbrz/SphereEmu-BR/issues/22) | Build the game files from the player's own client | The original repository, the only source of the converted game files, is closing. Newcomers cannot get them without this |
 | [#4](https://github.com/mathbrz/SphereEmu-BR/issues/4) | Respawn 8.3 s after the death hit, with 100 hp, in the nearest city | Measured twice, the same both times. Upstream revives in place after 5 s (built, needs a test in game) |
 | [#3](https://github.com/mathbrz/SphereEmu-BR/issues/3) | Dying costs about 5.75 percent of title and degree experience | Measured twice, same ratio. Make it configurable (built, off by default, needs a test and more levels) |
 | [#5](https://github.com/mathbrz/SphereEmu-BR/issues/5) | A city kills a monster that chases a player into it (hp 1, effect 320) | Seen with two different monsters |
@@ -32,7 +33,7 @@ A maintainer may reorder this list; change it with a pull request like any other
 
 | Issue | What | Waiting for |
 |---|---|---|
-| [#8](https://github.com/mathbrz/SphereEmu-BR/issues/8) | Missions: generate from the form, reward, dungeon entrance | More samples of the reward by place, participants and level |
+| [#8](https://github.com/mathbrz/SphereEmu-BR/issues/8) | Missions: generate from the form, reward, dungeon entrance | More samples of the reward by place, participants and level (open: how the form maps to the reward, see the issue) |
 | [#10](https://github.com/mathbrz/SphereEmu-BR/issues/10) | Trade between players | A capture of a finished trade with a second player |
 | [#12](https://github.com/mathbrz/SphereEmu-BR/issues/12) | Switch character without closing the game | A quick test of what the client does on a closed connection |
 

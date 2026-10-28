@@ -2,7 +2,7 @@
 # Dot-source from other Tools/asset_packs scripts.
 
 $script:AssetPackReleaseTag = 'asset-bundles'
-$script:AssetPackDefaultRepo = 'knelse/SphereEmu'
+$script:AssetPackDefaultRepo = 'mathbrz/SphereEmu-BR'
 
 # Heavy packs published to the asset-bundles release (CRC-gated).
 # Format 'pck' = Godot --export-pack via Preset.
